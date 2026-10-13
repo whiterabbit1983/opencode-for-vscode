@@ -1,0 +1,31 @@
+{
+  // Extension host project: runs in Node, so it gets Node's types and nothing
+  // from the DOM. The webview has its own project in webview/tsconfig.json,
+  // which VS Code picks up automatically because it is the nearest ancestor
+  // config for those files.
+  //
+  // `types` is listed explicitly rather than left to the default directory
+  // scan: when it is omitted the editor's language server can silently fail to
+  // pick up @types/node, which makes every `node:*` import, `process` and
+  // `NodeJS.Timeout` fail to resolve.
+  "compilerOptions": {
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "target": "ES2022",
+    "lib": ["ES2022"],
+    "types": ["node"],
+    "noEmit": true,
+    "sourceMap": true,
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "allowImportingTsExtensions": true
+  },
+  "include": ["src/**/*.ts", "test/**/*.ts"],
+  "exclude": ["node_modules", "dist", "out", "dev", "webview"]
+}

@@ -1,0 +1,25 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Run Extension",
+      "type": "extensionHost",
+      "request": "launch",
+      "args": ["--extensionDevelopmentPath=${workspaceFolder}"],
+      "outFiles": ["${workspaceFolder}/dist/**/*.js"],
+      "preLaunchTask": "npm: watch"
+    },
+    {
+      "name": "Preview chat UI (welcome)",
+      "type": "simpleBrowser",
+      "request": "launch",
+      "url": "dev/preview.html?scenario=welcome"
+    },
+    {
+      "name": "Preview chat UI (transcript)",
+      "type": "simpleBrowser",
+      "request": "launch",
+      "url": "dev/preview.html?scenario=transcript"
+    }
+  ]
+}

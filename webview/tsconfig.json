@@ -1,0 +1,32 @@
+{
+  // Webview project: this code runs in the browser sandbox, so it gets the DOM
+  // lib and no Node types.
+  //
+  // It lives here rather than at the repository root because VS Code picks the
+  // *nearest* ancestor tsconfig.json for each file: files under `webview/`
+  // resolve to this one, everything else resolves to the root config.
+  //
+  // Keeping the projects separate means `setTimeout` resolves to the correct
+  // overload on each side instead of depending on whether the DOM or the Node
+  // declaration happens to win.
+  "compilerOptions": {
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": [],
+    "noEmit": true,
+    "sourceMap": true,
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "allowImportingTsExtensions": true
+  },
+  "include": ["**/*.ts"],
+  "exclude": ["node_modules"]
+}

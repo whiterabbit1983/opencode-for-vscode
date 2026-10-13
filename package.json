@@ -1,0 +1,313 @@
+{
+  "name": "opencode-vscode",
+  "displayName": "OpenCode",
+  "description": "A native-feeling GUI for OpenCode in VS Code, powered by the Agent Client Protocol (ACP). No terminals, no console output — just chat.",
+  "version": "0.1.0",
+  "publisher": "opencode-community",
+  "license": "MIT",
+  "icon": "resources/icon.png",
+  "galleryBanner": {
+    "color": "#1f1f1f",
+    "theme": "dark"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/opencode-vscode/opencode-vscode.git"
+  },
+  "engines": {
+    "vscode": "^1.95.0"
+  },
+  "categories": [
+    "AI",
+    "Chat",
+    "Programming Languages"
+  ],
+  "keywords": [
+    "opencode",
+    "acp",
+    "agent",
+    "ai",
+    "copilot"
+  ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": "limited",
+      "description": "OpenCode runs as a child process and can read and write files in the workspace."
+    }
+  },
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "opencode",
+          "title": "OpenCode",
+          "icon": "resources/activity-bar.svg"
+        }
+      ]
+    },
+    "views": {
+      "opencode": [
+        {
+          "type": "webview",
+          "id": "opencode.chat",
+          "name": "Chat",
+          "icon": "resources/activity-bar.svg",
+          "contextualTitle": "OpenCode"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "opencode.chat.open",
+        "title": "Open Chat",
+        "category": "OpenCode",
+        "icon": "$(comment-discussion)"
+      },
+      {
+        "command": "opencode.chat.openInEditor",
+        "title": "Open Chat in Editor Tab",
+        "category": "OpenCode"
+      },
+      {
+        "command": "opencode.chat.newSession",
+        "title": "New Chat",
+        "category": "OpenCode",
+        "icon": "$(add)"
+      },
+      {
+        "command": "opencode.chat.stop",
+        "title": "Stop Generating",
+        "category": "OpenCode",
+        "icon": "$(debug-stop)"
+      },
+      {
+        "command": "opencode.chat.pickSession",
+        "title": "Resume Chat…",
+        "category": "OpenCode",
+        "icon": "$(history)"
+      },
+      {
+        "command": "opencode.chat.explainSelection",
+        "title": "Explain Selection",
+        "category": "OpenCode",
+        "icon": "$(lightbulb)"
+      },
+      {
+        "command": "opencode.chat.askAboutSelection",
+        "title": "Ask About Selection",
+        "category": "OpenCode",
+        "icon": "$(question)"
+      },
+      {
+        "command": "opencode.chat.askAboutFile",
+        "title": "Ask About File",
+        "category": "OpenCode",
+        "icon": "$(go-to-file)"
+      },
+      {
+        "command": "opencode.chat.signIn",
+        "title": "Sign In…",
+        "category": "OpenCode",
+        "icon": "$(sign-in)"
+      },
+      {
+        "command": "opencode.chat.restart",
+        "title": "Restart Agent",
+        "category": "OpenCode",
+        "icon": "$(debug-restart)"
+      },
+      {
+        "command": "opencode.chat.clearHistory",
+        "title": "Clear Local Chat History",
+        "category": "OpenCode",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "opencode.chat.copyLastResponse",
+        "title": "Copy Last Response",
+        "category": "OpenCode",
+        "icon": "$(copy)"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "opencode.chat.newSession",
+          "when": "view == opencode.chat",
+          "group": "navigation@1"
+        },
+        {
+          "command": "opencode.chat.pickSession",
+          "when": "view == opencode.chat",
+          "group": "navigation@2"
+        },
+        {
+          "command": "opencode.chat.restart",
+          "when": "view == opencode.chat",
+          "group": "1_configure@1"
+        },
+        {
+          "command": "opencode.chat.signIn",
+          "when": "view == opencode.chat",
+          "group": "1_configure@2"
+        },
+        {
+          "command": "opencode.chat.signIn",
+          "when": "view == opencode.chat && opencode.needsAuth",
+          "group": "navigation@3"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "opencode.chat.askAboutSelection",
+          "when": "editorHasSelection",
+          "group": "opencode@1"
+        },
+        {
+          "command": "opencode.chat.explainSelection",
+          "when": "editorHasSelection",
+          "group": "opencode@2"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "opencode.chat.stop",
+          "when": "opencode.busy"
+        },
+        {
+          "command": "opencode.chat.copyLastResponse",
+          "when": "opencode.hasResponse"
+        }
+      ]
+    },
+    "keybindings": [
+      {
+        "command": "opencode.chat.open",
+        "key": "ctrl+alt+o",
+        "mac": "cmd+alt+o"
+      }
+    ],
+    "configuration": {
+      "title": "OpenCode",
+      "properties": {
+        "opencode.binaryPath": {
+          "type": "string",
+          "default": "opencode",
+          "markdownDescription": "Path to the `opencode` executable. Leave as `opencode` to resolve it from `PATH`. Run `which opencode` to get an absolute path."
+        },
+        "opencode.extraArgs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "markdownDescription": "Extra arguments inserted before `acp`, e.g. `[\"--print-logs\"]` to write agent logs to a file. Note that `--print-logs` makes the agent log to stderr, which this extension keeps out of your UI."
+        },
+        "opencode.env": {
+          "type": "object",
+          "default": {},
+          "additionalProperties": {
+            "type": "string"
+          },
+          "markdownDescription": "Extra environment variables for the `opencode acp` child process."
+        },
+        "opencode.permissions": {
+          "type": "string",
+          "enum": [
+            "ask",
+            "autoRead",
+            "all"
+          ],
+          "enumDescriptions": [
+            "Ask me every time before a tool runs.",
+            "Approve read-only tools automatically, ask for edits and commands.",
+            "Approve everything automatically. Only use this in a trusted workspace."
+          ],
+          "default": "ask",
+          "description": "How often OpenCode asks before running a tool."
+        },
+        "opencode.diffView": {
+          "type": "string",
+          "enum": [
+            "inline",
+            "editor",
+            "off"
+          ],
+          "enumDescriptions": [
+            "Show file changes as an inline diff inside the chat.",
+            "Open changes in the native VS Code diff editor.",
+            "Do not render diffs."
+          ],
+          "default": "inline",
+          "description": "Where to preview file changes made by the agent."
+        },
+        "opencode.showThoughts": {
+          "type": "boolean",
+          "default": false,
+          "description": "Show the agent's reasoning stream in the chat. Off by default to keep the transcript tidy."
+        },
+        "opencode.showPlan": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show the agent's execution plan as a checklist above the chat."
+        },
+        "opencode.fontSize": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "maximum": 24,
+          "markdownDescription": "Font size in pixels for chat text. `0` uses the editor's default."
+        },
+        "opencode.maxToolOutputLines": {
+          "type": "number",
+          "default": 40,
+          "minimum": 5,
+          "maximum": 500,
+          "description": "How many lines of tool output to show before collapsing the rest."
+        },
+        "opencode.confirmDestructiveCommands": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show an extra confirmation for permission requests that run destructive shell commands."
+        },
+        "opencode.reuseLastSession": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Reopen the previous chat automatically when VS Code starts. The agent replays the transcript from its own session store, so nothing is lost."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run package",
+    "build": "node esbuild.mjs && npm run assets",
+    "assets": "node scripts/copy-assets.mjs",
+    "watch": "node esbuild.mjs --watch",
+    "package": "node esbuild.mjs --production && npm run assets",
+    "compile": "tsc -p tsconfig.json && tsc -p webview/tsconfig.json",
+    "lint": "tsc -p tsconfig.json && tsc -p webview/tsconfig.json",
+    "test": "node esbuild.mjs && node --test dist/test/unit.test.js && node scripts/verify-bundle.mjs",
+    "smoke": "npm run build && node dist/test/smoke.js",
+    "preview": "npm run build && node scripts/preview.mjs",
+    "icon": "node scripts/make-icon.mjs",
+    "vsix": "npm run package && npx @vscode/vsce package --no-dependencies"
+  },
+  "dependencies": {
+    "@agentclientprotocol/sdk": "^1.8.0",
+    "marked": "^15.0.7",
+    "zod": "^3.25.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "@types/pngjs": "^6.0.5",
+    "@types/vscode": "^1.95.0",
+    "@vscode/codicons": "^0.0.46-24",
+    "esbuild": "^0.25.0",
+    "pngjs": "^7.0.0",
+    "typescript": "^5.7.3"
+  }
+}

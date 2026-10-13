@@ -1,0 +1,199 @@
+/**
+ * Wire protocol between the extension host and the chat webview.
+ *
+ * This module is imported by both sides, so it must stay free of any `vscode`
+ * or Node imports.
+ */
+
+export type Block =
+  | { type: "text"; text: string }
+  | { type: "image"; mimeType: string; data: string }
+  | { type: "resource"; uri: string; name: string; mimeType?: string; text?: string };
+
+export type ToolCallContent =
+  | { type: "text"; text: string }
+  | { type: "diff"; path: string; oldText?: string; newText: string }
+  | { type: "terminal"; terminalId: string };
+
+export type ToolStatus = "pending" | "in_progress" | "completed" | "failed";
+
+export interface ToolCall {
+  toolCallId: string;
+  title: string;
+  name?: string;
+  kind?: string;
+  status: ToolStatus;
+  content: ToolCallContent[];
+  locations: Array<{ path: string; line?: number }>;
+  /** Set for tool calls produced by a child session. */
+  childSession?: { id: string; parentId?: string; depth: number; title?: string };
+}
+
+export interface PlanEntry {
+  content: string;
+  priority: "high" | "medium" | "low";
+  status: "pending" | "in_progress" | "completed";
+}
+
+export interface PermissionRequest {
+  requestId: string;
+  toolCallId?: string;
+  title: string;
+  kind?: string;
+  name?: string;
+  options: Array<{ optionId: string; name: string; kind: string }>;
+  /** Rendered content of the tool call, shown above the buttons. */
+  content: ToolCallContent[];
+  /** Extra warning shown for destructive commands when the user asked for it. */
+  warning?: string;
+}
+
+export type FormField =
+  | { key: string; label: string; control: "text"; required: boolean; placeholder?: string }
+  | { key: string; label: string; control: "textarea"; required: boolean }
+  | { key: string; label: string; control: "boolean"; required: boolean }
+  | {
+      key: string;
+      label: string;
+      control: "select";
+      required: boolean;
+      multiple: boolean;
+      options: Array<{ value: string; label: string }>;
+      /** Present when the agent also accepts a free-form answer. */
+      customKey?: string;
+    };
+
+export interface Question {
+  requestId: string;
+  message: string;
+  fields: FormField[];
+  toolCallId?: string;
+}
+
+export interface SessionSummary {
+  sessionId: string;
+  cwd: string;
+  title?: string;
+  updatedAt?: string;
+}
+
+export interface ConfigOptionView {
+  id: string;
+  name: string;
+  type: "select" | "boolean";
+  category?: string;
+  description?: string;
+  current?: string;
+  options?: Array<{ value: string; label: string; description?: string }>;
+}
+
+export type ConnectionState = "starting" | "ready" | "error" | "stopped";
+
+export interface ChatState {
+  connection: ConnectionState;
+  connectionMessage?: string;
+  busy: boolean;
+  session?: SessionSummary;
+  cwd?: string;
+  items: ChatItem[];
+  plan?: PlanEntry[];
+  modes?: { currentModeId: string; availableModes: Array<{ id: string; name: string; description?: string }> };
+  configOptions?: ConfigOptionView[];
+  commands?: Array<{ name: string; description: string }>;
+  model?: { id: string; name: string };
+  usage?: { used: number; size: number; cost?: { amount: number; currency: string } };
+  retry?: { attempt: number; nextRetryAt: string; error: { type: string; message: string } };
+  fonts: { size: number };
+  options: {
+    showThoughts: boolean;
+    showPlan: boolean;
+    diffView: "inline" | "editor" | "off";
+    permissions: "ask" | "autoRead" | "all";
+    maxToolOutputLines: number;
+    confirmDestructiveCommands: boolean;
+  };
+  /** Set while an `opencode auth login` terminal is being run. */
+  authInProgress?: boolean;
+}
+
+export type ChatItem =
+  | { kind: "user"; id: string; blocks: Block[] }
+  | { kind: "agent"; id: string; blocks: Block[]; streaming?: boolean }
+  | { kind: "thought"; id: string; blocks: Block[]; streaming?: boolean }
+  | { kind: "tool"; id: string; call: ToolCall }
+  | { kind: "notice"; id: string; severity: string; title: string; description?: string }
+  | { kind: "compaction"; id: string; status: string; summary: Block[] }
+  | { kind: "error"; id: string; message: string; detail?: string }
+  | {
+      kind: "permission";
+      id: string;
+      request: PermissionRequest;
+      resolved?: { outcome: "selected"; optionId: string; label: string } | { outcome: "cancelled" };
+    }
+  | {
+      kind: "question";
+      id: string;
+      question: Question;
+      resolved?: { action: "accept" | "decline" | "cancel"; summary?: string };
+    };
+
+/** True while the item still needs the user to act on it. */
+export function isBlockingItem(item: ChatItem): boolean {
+  if (item.kind === "permission") {
+    return !item.resolved;
+  }
+  if (item.kind === "question") {
+    return !item.resolved;
+  }
+  return false;
+}
+
+/* ------------------------------------------------------------------ */
+/* Extension host -> webview                                          */
+/* ------------------------------------------------------------------ */
+
+export type HostMessage =
+  | { type: "state"; state: ChatState }
+  | {
+      type: "patch";
+      items: ChatItem[];
+      plan?: PlanEntry[];
+      usage?: ChatState["usage"];
+      retry?: ChatState["retry"];
+    }
+  | { type: "scrollToEnd" }
+  | { type: "insertDraft"; text: string }
+  | { type: "submitDraft"; text: string }
+  | { type: "openLink"; href: string }
+  | { type: "focusInput" }
+  | { type: "toast"; level: "info" | "warn" | "error"; message: string };
+
+/* ------------------------------------------------------------------ */
+/* Webview -> extension host                                          */
+/* ------------------------------------------------------------------ */
+
+export type WebviewMessage =
+  | { type: "ready" }
+  | { type: "send"; text: string; blocks?: Block[] }
+  | { type: "cancel" }
+  | { type: "newSession" }
+  | { type: "retryAgent" }
+  | { type: "openSession"; sessionId: string }
+  | { type: "deleteSession"; sessionId: string }
+  | { type: "respondPermission"; requestId: string; optionId?: string; outcome: "selected" | "cancelled" }
+  | {
+      type: "respondQuestion";
+      requestId: string;
+      action: "accept" | "decline" | "cancel";
+      values?: Record<string, unknown>;
+    }
+  | { type: "setMode"; modeId: string }
+  | { type: "setConfigOption"; configId: string; value: string }
+  | { type: "openFile"; path: string; line?: number }
+  | { type: "openDiff"; path: string; oldText: string; newText: string }
+  | { type: "openLink"; href: string }
+  | { type: "signIn" }
+  | { type: "showLog" }
+  | { type: "runCommand"; command: string }
+  | { type: "copyText"; text: string }
+  | { type: "log"; level: "info" | "warn" | "error"; message: string };

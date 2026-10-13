@@ -1,0 +1,14 @@
+node_modules/
+dist/
+out/
+*.vsix
+
+# Generated at build time from @vscode/codicons.
+media/codicon.css
+media/codicon.ttf
+
+# Preview screenshots produced by `npm run preview`.
+dev/shots/
+
+.DS_Store
+*.log

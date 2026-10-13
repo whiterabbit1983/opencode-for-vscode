@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>OpenCode chat — visual preview</title>
+    <link href="../media/codicon.css" rel="stylesheet" />
+    <link href="../media/chat.css" rel="stylesheet" />
+    <style>
+      /* Stand-ins for the variables VS Code injects into a webview. */
+      :root {
+        --vscode-font-family: "Ubuntu", "Droid Sans", system-ui, sans-serif;
+        --vscode-editor-font-family: "Droid Sans Mono", ui-monospace, Menlo, monospace;
+        --vscode-font-size: 13px;
+        --vscode-foreground: #cccccc;
+        --vscode-descriptionForeground: #9d9d9d;
+        --vscode-panel-border: #2b2b2b;
+        --vscode-editorWidget-background: #202020;
+        --vscode-widget-border: #313131;
+        --vscode-list-hoverBackground: #2a2d2e;
+        --vscode-textLink-foreground: #4daafc;
+        --vscode-icon-foreground: #cccccc;
+        --vscode-focusBorder: #0078d4;
+        --vscode-textCodeBlock-background: #0a0a0a;
+        --vscode-editorLineNumber-foreground: #6e7681;
+        --vscode-progressBar-background: #0078d4;
+        --vscode-testing-iconPassed: #73c991;
+        --vscode-editorError-foreground: #f14c4c;
+        --vscode-editorWarning-foreground: #cca700;
+        --vscode-editorInfo-foreground: #3794ff;
+        --vscode-list-activeSelectionBackground: #04395e;
+        --vscode-list-activeSelectionForeground: #ffffff;
+        --vscode-input-background: #1f1f1f;
+        --vscode-input-foreground: #cccccc;
+        --vscode-button-background: #0e639c;
+        --vscode-button-foreground: #ffffff;
+        --vscode-button-hoverBackground: #1177bb;
+        --vscode-button-secondaryBackground: #313131;
+        --vscode-button-secondaryForeground: #cccccc;
+        --vscode-button-secondaryHoverBackground: #3c3c3c;
+        --vscode-menu-background: #1f1f1f;
+        --vscode-menu-foreground: #cccccc;
+        --vscode-menu-selectionBackground: #04395e;
+        --vscode-menu-selectionForeground: #ffffff;
+        --vscode-menu-border: #454545;
+        --vscode-scrollbarSlider-background: #79797966;
+        --vscode-editor-inactiveSelectionBackground: #3a3d41;
+        --vscode-diffEditor-insertedTextBackground: #2b522140;
+        --vscode-diffEditor-removedTextBackground: #6b262240;
+        --vscode-gitDecoration-addedResourceForeground: #73c991;
+        --vscode-gitDecoration-deletedResourceForeground: #f14c4c;
+        --vscode-debugTokenExpression-string: #ce9178;
+        --vscode-debugTokenExpression-number: #b5cea8;
+        --vscode-debugTokenExpression-keyword: #569cd6;
+        --vscode-debugTokenExpression-function: #dcdcaa;
+        --vscode-debugTokenExpression-variable: #9cdcfe;
+        --vscode-debugTokenExpression-typeParameter: #4ec9b0;
+      }
+
+      body {
+        width: 480px;
+        height: 920px;
+      }
+
+      #preview-debug {
+        position: fixed;
+        inset: 0;
+        z-index: 99;
+        background: #300;
+        color: #fdd;
+        font: 11px/1.45 monospace;
+        padding: 12px;
+        margin: 0;
+        white-space: pre-wrap;
+        overflow: auto;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+
+    <script>
+      // Debug surface: any error during boot is reported here so a headless
+      // screenshot shows it instead of a silently broken panel.
+      const debug = document.createElement("pre");
+      debug.id = "preview-debug";
+      debug.hidden = true;
+      document.documentElement.appendChild(debug);
+
+      const showFailure = (label, detail) => {
+        debug.hidden = false;
+        debug.textContent += `${label}: ${detail}\n\n`;
+      };
+      window.addEventListener("error", (event) => showFailure(event.message, event.error?.stack ?? ""));
+      window.addEventListener("unhandledrejection", (event) => showFailure("rejection", String(event.reason?.stack ?? event.reason)));
+
+      window.__steps = [];
+      window.acquireVsCodeApi = () => ({
+        postMessage(message) {
+          window.__steps.push(`post:${message.type}`);
+        },
+        setState() {},
+        getState() {},
+      });
+      window.__steps.push("api-ready");
+
+      // Dispatch a real `message` event so every listener on the window — the
+      // bundle's included — receives it, exactly as VS Code does.
+      window.__send = (data) => {
+        window.__steps.push(`send:${data.type}`);
+        try {
+          window.dispatchEvent(new MessageEvent("message", { data }));
+        } catch (error) {
+          showFailure("dispatch", error?.stack ?? String(error));
+        }
+      };
+      window.__steps.push("listener-ready");
+    </script>
+
+    <script src="./scenarios.js"></script>
+
+    <script src="../dist/webview/main.js"></script>
+
+    <script>
+      (() => {
+        const name = new URLSearchParams(location.search).get("scenario") || "transcript";
+        if (typeof scenarios !== "object" || !scenarios) {
+          showFailure("scenarios", "scenarios.js did not define `scenarios`");
+        } else if (!scenarios[name]) {
+          showFailure("scenarios", `unknown scenario "${name}"`);
+        }
+        window.__send({ type: "state", state: scenarios[name] || scenarios.transcript });
+        window.__steps.push(`sent:${name}`);
+
+        // `?expand=<n>` clicks the nth tool-call header so collapsed tool cards
+        // can be reviewed without an agent.
+        const expand = new URLSearchParams(location.search).get("expand");
+        if (expand !== null) {
+          for (let i = 0; i < Number(expand || 1); i++) {
+            const headers = document.querySelectorAll('[data-action="toggle-tool"]');
+            headers[i]?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+          }
+        }
+
+        if (window.__steps.join(" ") !== "api-ready listener-ready post:ready send:state " + `sent:${name}`) {
+          showFailure("steps", window.__steps.join(" -> "));
+        }
+      })();
+    </script>
+  </body>
+</html>

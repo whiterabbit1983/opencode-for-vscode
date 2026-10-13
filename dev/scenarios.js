@@ -1,0 +1,230 @@
+// Sample states for dev/preview.html. Loaded as an inline script so the preview
+// harness can switch between scenarios with `?scenario=…`.
+const options = {
+  permissions: "ask",
+  showThoughts: false,
+  showPlan: true,
+  diffView: "inline",
+  maxToolOutputLines: 40,
+  confirmDestructiveCommands: true,
+};
+
+const base = {
+  connection: "ready",
+  busy: false,
+  cwd: "/work/acme-api",
+  fonts: { size: 0 },
+  options,
+  modes: {
+    currentModeId: "build",
+    availableModes: [
+      { id: "build", name: "Build", description: "Edit files and run commands" },
+      { id: "plan", name: "Plan", description: "Research and propose, no edits" },
+      { id: "ask", name: "Ask", description: "Answer questions about the code" },
+    ],
+  },
+  configOptions: [
+    {
+      id: "model",
+      name: "Model",
+      type: "select",
+      category: "model",
+      current: "anthropic/claude-sonnet-4-5",
+      options: [
+        { value: "anthropic/claude-sonnet-4-5", label: "Claude Sonnet 4.5" },
+        { value: "openai/gpt-5", label: "GPT-5" },
+        { value: "anthropic/claude-opus-4-1", label: "Claude Opus 4.1" },
+      ],
+    },
+    {
+      id: "effort",
+      name: "Reasoning effort",
+      type: "select",
+      category: "thought_level",
+      current: "medium",
+      options: [
+        { value: "low", label: "Low" },
+        { value: "medium", label: "Medium" },
+        { value: "high", label: "High" },
+      ],
+    },
+  ],
+  commands: [{ name: "compact", description: "Compact the session" }],
+  usage: { used: 48_120, size: 200_000, cost: { amount: 0.087, currency: "USD" } },
+};
+
+const diff = {
+  type: "diff",
+  path: "/work/acme-api/src/rate-limit.ts",
+  oldText: `export function rateLimit(key: string, limit = 100) {
+  const hits = store.get(key) ?? 0
+  if (hits >= limit) throw new Error("rate limited")
+  store.set(key, hits + 1)
+}
+`,
+  newText: `export function rateLimit(key: string, limit = 100) {
+  const hits = store.get(key) ?? 0
+  if (hits >= limit) throw new Error(\`rate limited: \${key}\`)
+  store.set(key, hits + 1)
+}
+
+export function resetLimit(key: string) {
+  store.delete(key)
+}
+`,
+};
+
+scenarios = {
+  empty: {
+    ...base,
+    items: [],
+  },
+
+  welcome: {
+    ...base,
+    items: [],
+  },
+
+  transcript: {
+    ...base,
+    plan: [
+      { content: "Read the rate limiter and its tests", priority: "high", status: "completed" },
+      { content: "Add a reset helper with coverage", priority: "high", status: "in_progress" },
+      { content: "Run the test suite", priority: "medium", status: "pending" },
+    ],
+    items: [
+      { kind: "user", id: "u1", blocks: [{ type: "text", text: "The rate limiter never clears old keys, so a client that retries forever stays blocked. Fix it and add a test." }] },
+      {
+        kind: "tool",
+        id: "t1",
+        call: {
+          toolCallId: "call_1",
+          title: "Read src/rate-limit.ts",
+          name: "read",
+          kind: "read",
+          status: "completed",
+          content: [{ type: "text", text: "export function rateLimit(key: string, limit = 100) {\n  const hits = store.get(key) ?? 0\n  ..." }],
+          locations: [{ path: "/work/acme-api/src/rate-limit.ts", line: 1 }],
+        },
+      },
+      {
+        kind: "tool",
+        id: "t2",
+        call: {
+          toolCallId: "call_2",
+          title: "Edit src/rate-limit.ts",
+          name: "edit",
+          kind: "edit",
+          status: "completed",
+          content: [diff],
+          locations: [{ path: "/work/acme-api/src/rate-limit.ts" }],
+        },
+      },
+      {
+        kind: "tool",
+        id: "t3",
+        call: {
+          toolCallId: "call_3",
+          title: "bun test --run src/rate-limit.test.ts",
+          name: "bash",
+          kind: "execute",
+          status: "completed",
+          content: [
+            {
+              type: "text",
+              text: "$ bun test --run src/rate-limit.test.ts\nbun test v1.1.34\n\nsrc/rate-limit.test.ts:\n✓ allows requests under the limit [1.2ms]\n✓ rejects requests over the limit [0.4ms]\n✓ resetLimit clears the counter [0.8ms]\n\n3 pass, 0 fail, 7 expect() calls\nRan 3 tests in 42ms.",
+            },
+          ],
+          locations: [],
+        },
+      },
+      {
+        kind: "agent",
+        id: "a1",
+        blocks: [
+          {
+            type: "text",
+            text: "Added a `resetLimit` helper and covered it.\n\nThe window logic itself is unchanged — this gives callers an explicit way to clear a counter instead of waiting for the store to expire:\n\n```ts\nexport function resetLimit(key: string) {\n  store.delete(key)\n}\n```\n\nTests: **3 passing**. I did not change the default TTL, since that would affect every existing client.",
+          },
+        ],
+      },
+    ],
+  },
+
+  permission: {
+    ...base,
+    busy: true,
+    items: [
+      { kind: "user", id: "u1", blocks: [{ type: "text", text: "Run the migration and then the full suite." }] },
+      {
+        kind: "tool",
+        id: "t1",
+        call: {
+          toolCallId: "call_1",
+          title: "Read drizzle.config.ts",
+          name: "read",
+          kind: "read",
+          status: "completed",
+          content: [],
+          locations: [{ path: "/work/acme-api/drizzle.config.ts" }],
+        },
+      },
+      {
+        kind: "permission",
+        id: "permission:perm_1",
+        request: {
+          requestId: "perm_1",
+          toolCallId: "call_2",
+          title: "Run a shell command",
+          kind: "execute",
+          name: "bash",
+          warning: "This command permanently deletes files. Check the command before approving.",
+          content: [{ type: "text", text: "bunx drizzle-kit push --force && rm -rf ./var/cache && bun test" }],
+          options: [
+            { optionId: "once", name: "Allow once", kind: "allow_once" },
+            { optionId: "always", name: "Always allow", kind: "allow_always" },
+            { optionId: "reject", name: "Reject", kind: "reject_once" },
+          ],
+        },
+      },
+    ],
+  },
+
+  question: {
+    ...base,
+    busy: true,
+    items: [
+      { kind: "user", id: "u1", blocks: [{ type: "text", text: "Add a migration for the new index." }] },
+      {
+        kind: "question",
+        id: "question:ask_1",
+        question: {
+          requestId: "ask_1",
+          message: "Which migration strategy should this index use?",
+          fields: [
+            {
+              key: "strategy",
+              label: "Strategy",
+              control: "select",
+              multiple: false,
+              required: true,
+              options: [
+                { value: "concurrent", label: "CREATE INDEX CONCURRENTLY" },
+                { value: "plain", label: "Plain CREATE INDEX" },
+                { value: "external", label: "External tool (concurrently + drop)" },
+              ],
+            },
+            { key: "note", label: "Notes", control: "textarea", required: false },
+          ],
+        },
+      },
+    ],
+  },
+
+  error: {
+    ...base,
+    connection: "error",
+    connectionMessage: "opencode exited with code 1: provider authentication required",
+    items: [],
+  },
+};
