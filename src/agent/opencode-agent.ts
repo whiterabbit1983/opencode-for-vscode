@@ -35,15 +35,17 @@ import {
   type WriteTextFileRequest,
 } from "@agentclientprotocol/sdk";
 
-import { hostLabel, readSettings, type OpenCodeSettings } from "../config.js";
+import { configEnvironment, hostLabel, readSettings, type OpenCodeSettings } from "../config.js";
 import { describeError, log } from "../logger.js";
 import {
   candidatePaths,
+  composeEnv,
   expandHome,
   isPathLike,
   parseProbe,
   shellProbes,
   type ProbeResult,
+  type ShellEnv,
   type ShellProbe,
 } from "../shared/binary.js";
 import { EXTENSION_VERSION } from "../version.js";
@@ -106,6 +108,16 @@ const SESSION_TIMEOUT_MS = 20_000;
  * and a hung shell must never become a hung extension host.
  */
 const LOGIN_SHELL_TIMEOUT_MS = 5_000;
+
+/**
+ * How long the one-off probe for the OpenCode config environment may take.
+ *
+ * Shorter than a full discovery, because this one is on the way to *every*
+ * start rather than only to the ones where the binary could not be found, and
+ * nothing here is worth holding the chat for: a shell that will not answer in
+ * this long is not going to describe a config file worth waiting for.
+ */
+const CONFIG_ENV_TIMEOUT_MS = 3_000;
 
 /**
  * How long to wait for a process's death once its connection has already
@@ -221,6 +233,23 @@ export class OpenCodeAgent {
    * `opencode.binaryPath` and the entry no longer applies.
    */
   private resolved?: { requested: string; binary: string; envPath?: string };
+
+  /**
+   * The OpenCode config environment the user's login shell exports.
+   *
+   * `OPENCODE_CONFIG` and `OPENCODE_CONFIG_DIR` are how a config file OpenCode
+   * does not find by itself gets loaded, and a provider defined only in one of
+   * them is missing from the model picker entirely when they are absent. They
+   * are exported from a shell profile more often than not, and under
+   * Remote-SSH the extension host has never seen that profile — so the answer
+   * has to be asked for whether or not the binary itself needed asking about.
+   *
+   * Asked once per extension session: a profile does not change between two
+   * chats, and a value found is worth keeping for every later start.
+   */
+  private shellConfig?: Record<string, string>;
+  /** In-flight ask, so two starts do not each wait on their own shell. */
+  private shellConfigRead?: Promise<void>;
 
   /**
    * The binary and environment the running agent was started with.
@@ -427,9 +456,15 @@ export class OpenCodeAgent {
    * running some other `opencode` instead would be worse than an error.
    */
   private async launch(settings: OpenCodeSettings, args: string[]): Promise<Launched> {
+    // Asked before anything is spawned, because a custom config file has to be
+    // in the environment of the *agent* for its models to be pickable at all —
+    // reading them out of it afterwards would only produce choices the session
+    // refuses.
+    await this.loadShellConfig();
+
     const remembered = this.resolved;
     if (remembered?.requested === settings.binaryPath) {
-      const env = this.childEnv(settings, remembered.envPath);
+      const env = this.childEnv(settings, remembered.envPath ? { envPath: remembered.envPath } : undefined);
       try {
         const child = await this.spawnChild(remembered.binary, args, env);
         return { child, binary: remembered.binary, env };
@@ -459,7 +494,7 @@ export class OpenCodeAgent {
     }
 
     log.info("resolved `%s` to %s on %s", settings.binaryPath, found.binary, hostLabel());
-    const foundEnv = this.childEnv(settings, found.envPath);
+    const foundEnv = this.childEnv(settings, { envPath: found.envPath });
     const child = await this.spawnChild(found.binary, args, foundEnv);
     this.resolved = { requested: settings.binaryPath, binary: found.binary, envPath: found.envPath };
     return { child, binary: found.binary, env: foundEnv };
@@ -468,15 +503,65 @@ export class OpenCodeAgent {
   /**
    * The environment the agent is started with.
    *
-   * A discovered login-shell `PATH` sits underneath `opencode.env` rather than
-   * over it: a `PATH` the user set by hand is a decision, not a default.
+   * A discovered login-shell `PATH` and the OpenCode config variables sit
+   * underneath `opencode.env` rather than over it: a value the user set by hand
+   * is a decision, not a default. Everything below that — the agent's own
+   * settings, the ones that name its config files — is applied first of all.
    */
-  private childEnv(settings: OpenCodeSettings, envPath?: string): NodeJS.ProcessEnv {
-    return {
-      ...process.env,
-      ...(envPath ? { PATH: envPath } : {}),
+  private childEnv(settings: OpenCodeSettings, shell?: ShellEnv): NodeJS.ProcessEnv {
+    // The config variables ride along whether or not a `PATH` came from the
+    // same shell: a box whose `opencode` is already on the extension host's
+    // `PATH` is still a box whose profile holds the config file it loads.
+    return composeEnv(process.env, { envPath: shell?.envPath, configEnv: this.shellConfig }, {
+      ...configEnvironment(settings, homedir()),
       ...settings.env,
-    };
+    });
+  }
+
+  /**
+   * Asks the user's login shell which OpenCode config environment it exports.
+   *
+   * Only the first shell is asked, the one a terminal would be: `$SHELL` when it
+   * is set, `/bin/bash` otherwise. Asking all of them would make every start
+   * wait on however many the box has, to learn what one profile already said.
+   *
+   * Nothing found is not a failure. A shell that cannot start, or that exports
+   * neither variable, leaves the agent with the environment the extension host
+   * had — which is what every start used to do, and is the right answer on a
+   * box that keeps its config where OpenCode looks for it by default.
+   */
+  private async loadShellConfig(): Promise<void> {
+    if (this.shellConfigRead) {
+      return this.shellConfigRead;
+    }
+    this.shellConfigRead = (async () => {
+      // Windows resolves names through `PATHEXT` and has no login shell to ask.
+      if (process.platform === "win32") {
+        return;
+      }
+      const probe = shellProbes(this.resolved?.requested ?? "opencode", { SHELL: process.env.SHELL })[0];
+      const result = await this.probeShell(probe, CONFIG_ENV_TIMEOUT_MS);
+      this.rememberShellConfig(result.configEnv);
+    })();
+    return this.shellConfigRead;
+  }
+
+  /**
+   * Keeps the OpenCode config variables a shell reported, whichever shell it was.
+   *
+   * Binary discovery asks the same question of every shell it tries, and a
+   * machine whose `opencode` only a profile can resolve is exactly the machine
+   * whose profile is worth listening to.
+   */
+  private rememberShellConfig(configEnv: Record<string, string> | undefined): void {
+    const merged = { ...configEnv, ...this.shellConfig };
+    for (const [name, value] of Object.entries(merged)) {
+      if (this.shellConfig?.[name] === value) {
+        continue;
+      }
+      this.shellConfig = merged;
+      log.info("login shell exports %s=%s, so it is loaded with the agent", name, value);
+    }
   }
 
   private spawnChild(binary: string, args: string[], env: NodeJS.ProcessEnv): Promise<ChildProcessWithoutNullStreams> {
@@ -508,6 +593,10 @@ export class OpenCodeAgent {
    * reports the binary, the directories they would have had it in are checked
    * directly — a shell that fails to start still leaves a usable `PATH` behind
    * in the common case where the extension host itself carries one.
+   *
+   * Whatever OpenCode config variables these shells export are kept on the way
+   * past: this is already the expensive path, and it only runs on a machine
+   * whose profile the extension host has not seen.
    */
   private async discover(name: string): Promise<{ binary: string; envPath?: string } | undefined> {
     // Windows resolves names through `PATHEXT`, and there is no login shell to
@@ -517,9 +606,10 @@ export class OpenCodeAgent {
     }
 
     let envPath: string | undefined;
-    for (const probe of shellProbes(name)) {
+    for (const probe of shellProbes(name, { SHELL: process.env.SHELL })) {
       const result = await this.probeShell(probe);
       envPath = envPath ?? result.envPath;
+      this.rememberShellConfig(result.configEnv);
       log.debug("login shell %s answered: %s", probe.shell, result.binary ?? "no binary");
       if (result.binary) {
         return { binary: result.binary, envPath: result.envPath ?? envPath };
@@ -537,7 +627,7 @@ export class OpenCodeAgent {
   }
 
   /** Runs one login-shell probe, giving up rather than hanging on a bad rc file. */
-  private probeShell(probe: ShellProbe): Promise<ProbeResult> {
+  private probeShell(probe: ShellProbe, timeoutMs = LOGIN_SHELL_TIMEOUT_MS): Promise<ProbeResult> {
     return new Promise<ProbeResult>((resolve) => {
       let settled = false;
       const finish = (result: ProbeResult) => {
@@ -576,10 +666,10 @@ export class OpenCodeAgent {
       child.once("close", () => finish(parseProbe(stdout)));
 
       const timer = setTimeout(() => {
-        log.warn("login shell %s did not answer in %ss; giving up on it", probe.shell, LOGIN_SHELL_TIMEOUT_MS / 1000);
+        log.warn("login shell %s did not answer in %ss; giving up on it", probe.shell, timeoutMs / 1000);
         child.kill("SIGKILL");
         finish({});
-      }, LOGIN_SHELL_TIMEOUT_MS);
+      }, timeoutMs);
       timer.unref?.();
     });
   }

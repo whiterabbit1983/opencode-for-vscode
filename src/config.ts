@@ -1,11 +1,15 @@
 import * as vscode from "vscode";
 
+import { expandHome } from "./shared/binary.js";
+
 export const CONFIG_SECTION = "opencode";
 
 export interface OpenCodeSettings {
   binaryPath: string;
   extraArgs: string[];
   env: Record<string, string>;
+  configFile?: string;
+  configDir?: string;
   permissions: "ask" | "autoRead" | "all";
   diffView: "inline" | "editor" | "off";
   showThoughts: boolean;
@@ -22,6 +26,8 @@ export function readSettings(): OpenCodeSettings {
     binaryPath: config.get<string>("binaryPath") || "opencode",
     extraArgs: config.get<string[]>("extraArgs") ?? [],
     env: (config.get<Record<string, string>>("env") ?? {}) as Record<string, string>,
+    configFile: config.get<string>("configFile") || undefined,
+    configDir: config.get<string>("configDir") || undefined,
     permissions: config.get<OpenCodeSettings["permissions"]>("permissions") ?? "ask",
     diffView: config.get<OpenCodeSettings["diffView"]>("diffView") ?? "inline",
     showThoughts: config.get<boolean>("showThoughts") ?? false,
@@ -31,6 +37,32 @@ export function readSettings(): OpenCodeSettings {
     confirmDestructiveCommands: config.get<boolean>("confirmDestructiveCommands") ?? true,
     reuseLastSession: config.get<boolean>("reuseLastSession") ?? false,
   };
+}
+
+/**
+ * The extra OpenCode config this workspace asks for, as the environment the
+ * agent has to be started with for it to be loaded.
+ *
+ * OpenCode reads `OPENCODE_CONFIG` and `OPENCODE_CONFIG_DIR` itself and merges
+ * what they point at into the config it would otherwise load, so handing the
+ * agent this environment is what makes a provider configured in one of those
+ * files a provider the session can actually use — and therefore a section in
+ * the model picker, rather than a file nothing ever opened.
+ *
+ * This is the way to point at a config file without editing a shell profile,
+ * which over Remote-SSH is a file the extension host never reads anyway. A
+ * value set here outranks one a login shell exports; `opencode.env` outranks
+ * both.
+ */
+export function configEnvironment(settings: OpenCodeSettings, home: string | undefined): Record<string, string> {
+  const environment: Record<string, string> = {};
+  if (settings.configFile) {
+    environment.OPENCODE_CONFIG = expandHome(settings.configFile, home);
+  }
+  if (settings.configDir) {
+    environment.OPENCODE_CONFIG_DIR = expandHome(settings.configDir, home);
+  }
+  return environment;
 }
 
 /** Fires whenever any `opencode.*` setting changes. */

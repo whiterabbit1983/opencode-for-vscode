@@ -112,6 +112,24 @@ custom provider: an agent does not always enumerate a provider configured in
 `opencode.json`, and the host catalog is what knows about it. When the host
 contributed to the list, the picker says so.
 
+### Config files OpenCode only finds through the environment
+
+A provider does not have to live in `opencode.json`. OpenCode also loads a
+config *file* named by `OPENCODE_CONFIG` and a config *directory* named by
+`OPENCODE_CONFIG_DIR`, and those are usually exported from a shell profile — a
+file the extension host has never read when VS Code got there over SSH, where it
+is started by a non-interactive command. The agent then comes up without that
+config, and every model behind the provider is missing from the picker while
+the chat looks perfectly healthy.
+
+So the extension asks your login shell for both variables, once per window, and
+starts the agent with whatever it says — the same answer a terminal in that SSH
+session would have given. If you would rather not go through a profile at all,
+`opencode.configFile` and `opencode.configDir` set the same two variables
+directly; on a remote host, set them in the **Remote [SSH: host]** scope. The
+**more** menu then lists the config file among the sources OpenCode loaded,
+which is how to confirm it arrived.
+
 ## Commands
 
 | Command | What it does |
@@ -136,6 +154,8 @@ contributed to the list, the picker says so.
 | `opencode.binaryPath` | `opencode` | Path to the `opencode` executable |
 | `opencode.extraArgs` | `[]` | Extra arguments before `acp`, e.g. `["--print-logs"]` |
 | `opencode.env` | `{}` | Extra environment variables for the agent |
+| `opencode.configFile` | `""` | An extra OpenCode config file to load, as `OPENCODE_CONFIG` is |
+| `opencode.configDir` | `""` | An OpenCode config directory to use instead of `~/.config/opencode` |
 | `opencode.permissions` | `ask` | `ask`, `autoRead` (approve read-only tools) or `all` |
 | `opencode.diffView` | `inline` | `inline`, `editor` (native diff) or `off` |
 | `opencode.showThoughts` | `false` | Show the agent's reasoning stream |

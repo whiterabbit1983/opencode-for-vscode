@@ -158,6 +158,46 @@ test("a bare name the PATH cannot see is resolved through a login shell", async 
   );
 });
 
+test("the config a login shell exports is loaded with the agent", async () => {
+  // The same Remote-SSH box as above, failing in a quieter way: `opencode` is
+  // on the extension host's `PATH`, so nothing was wrong with finding it, and
+  // the chat came up fine — it just had no OmniRouter in the picker. The
+  // provider lives in a config file that `OPENCODE_CONFIG` names, the profile
+  // exports that variable, and the extension host started by a non-interactive
+  // SSH command never read the profile. So the agent has to be started with
+  // what the login shell says, even though finding the binary never asked.
+  if (!existsSync("/bin/bash")) {
+    return;
+  }
+  const home = mkdtempSync(join(tmpdir(), "opencode-config-"));
+  const bin = join(home, ".opencode", "bin");
+  mkdirSync(bin, { recursive: true });
+  const binary = join(bin, "opencode");
+  // It says which config file it was started with, on the way out.
+  writeFileSync(binary, '#!/bin/sh\necho "config=$OPENCODE_CONFIG" >&2\nexit 1\n', { mode: 0o755 });
+  writeFileSync(join(home, ".bashrc"), 'export OPENCODE_CONFIG="/srv/api/omnirouter.json"\n');
+
+  const restore = withEnv({
+    OPENCODE_BIN: "opencode",
+    SHELL: "/bin/bash",
+    HOME: home,
+    // `opencode` is reachable without the profile, which is what makes this the
+    // case that used to be missed.
+    PATH: `/usr/bin:/bin:${bin}`,
+    // The extension host itself knows nothing about the config file.
+    OPENCODE_CONFIG: undefined,
+  });
+  const outcome = await startOutcome();
+  restore();
+
+  assert.equal(outcome.ok, false);
+  assert.match(
+    outcome.message,
+    /config=\/srv\/api\/omnirouter\.json/,
+    "expected the agent to have been started with the config file the profile exports",
+  );
+});
+
 function escapeForRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }

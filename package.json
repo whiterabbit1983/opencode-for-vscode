@@ -2,7 +2,7 @@
   "name": "opencode-vscode",
   "displayName": "OpenCode",
   "description": "A native-feeling GUI for OpenCode in VS Code, powered by the Agent Client Protocol (ACP). No terminals, no console output — just chat.",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "publisher": "opencode-community",
   "license": "MIT",
   "icon": "resources/icon.png",
@@ -191,6 +191,16 @@
             "type": "string"
           },
           "markdownDescription": "Extra environment variables for the `opencode acp` child process."
+        },
+        "opencode.configFile": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "An extra OpenCode config file to load, for a provider that lives in one of its own rather than in `opencode.json`. OpenCode merges it into the config it would otherwise load. Handed to the agent as `OPENCODE_CONFIG`, and used for the settings this extension reads — the model list, the agents — so those match what the session can use. A leading `~` is expanded. Over SSH, set this in the *Remote [SSH: host]* scope, where the profile exporting `OPENCODE_CONFIG` itself is one the extension host never reads."
+        },
+        "opencode.configDir": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "An OpenCode config directory to use instead of the global `~/.config/opencode`, searched for agents, commands, modes and plugins exactly as that one is. Handed to the agent as `OPENCODE_CONFIG_DIR`. A leading `~` is expanded. Note this *replaces* the global directory rather than adding to it; use `opencode.configFile` to add a file without changing where the rest comes from."
         },
         "opencode.permissions": {
           "type": "string",

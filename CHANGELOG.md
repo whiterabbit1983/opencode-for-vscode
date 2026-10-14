@@ -6,6 +6,43 @@ All notable changes to this extension are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.2.4] - 2026-10-14
+
+### Fixed
+
+- A custom provider that lives in an OpenCode config file the environment names
+  is no longer invisible over Remote-SSH. `OPENCODE_CONFIG` and
+  `OPENCODE_CONFIG_DIR` are how OpenCode loads a config file it does not find by
+  itself, and they are exported from a shell profile more often than not — a
+  profile the extension host never read, because over SSH it is started by a
+  non-interactive command. The agent then came up without that config and
+  without a single model behind it, which is why the picker showed no OmniRouter
+  on a box configured for it while the chat itself worked. The login shell is
+  now asked for those variables once per window and the agent is started with
+  whatever it says, which is the environment a terminal in that same session
+  would have had. The same answer carries over to the settings this extension
+  reads — the model list, the agents and the config sources all come from an
+  `opencode` that loaded the same files the session did.
+- A login shell now reads its `~/.bashrc` when asked. A login shell stops at
+  `~/.bash_profile`, `~/.bash_login` or `~/.profile`, and reads `~/.bashrc` only
+  if one of those sources it — so `-i` alone did not reach it, and a home
+  holding nothing but a `~/.bashrc` was never read at all. Ubuntu and Debian
+  ship a `~/.profile` that does source it, which is why this went unnoticed;
+  anywhere else, a `PATH` or an export added to a `.bashrc` was silently lost.
+
+### Added
+
+- `opencode.configFile` and `opencode.configDir`, for pointing at an OpenCode
+  config file or directory without editing a shell profile — the same two
+  variables, set directly, and applied to both the agent and the settings this
+  extension reads. Over SSH, set them in the **Remote [SSH: host]** scope.
+
+## [0.2.3] - 2026-10-14
+
+### Changed
+
+- Nothing but the version number, which had fallen behind the 0.2.2 fixes.
+
 ## [0.2.2] - 2026-10-14
 
 ### Fixed

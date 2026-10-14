@@ -8,7 +8,7 @@ import { diffLines } from "../webview/diff.js";
 import { escapeHtml, highlight, renderMarkdown, sanitizeUrl } from "../webview/markdown.js";
 import { modelLabel, modelName } from "../src/shared/model-name.js";
 import { modelToRestore } from "../src/session/model-memory.js";
-import { candidatePaths, expandHome, isPathLike, parseProbe, probeScript, shellProbes, shellQuote } from "../src/shared/binary.js";
+import { candidatePaths, composeEnv, expandHome, isPathLike, parseProbe, probeScript, shellProbes, shellQuote } from "../src/shared/binary.js";
 import { compactNumber, contextRatio, formatPercent, isPersistable, isUsage, mergeUsage, meterLevel, rememberUsage, usageMemory, usageStore, usageToSeed } from "../src/shared/usage.js";
 import type { Block, ChatItem, ConfigOptionView, PermissionRequest } from "../src/shared/protocol.js";
 
@@ -686,17 +686,17 @@ test("a shell that found nothing yields no binary", () => {
 });
 
 test("the user's shell is asked first, and sh last without interactivity", () => {
-  // `-i` is what gets `~/.opencode/bin`, because the standard `~/.bashrc`
-  // returns early for a non-interactive shell. `sh` has no rc files worth that
-  // risk, so it is asked plainly.
+  // `-i` is what gets an rc file that returns early for a non-interactive
+  // shell, which is where `~/.opencode/bin` is appended. `sh` has no rc files
+  // worth that risk, so it is asked plainly.
   const probes = shellProbes("opencode", { SHELL: "/usr/bin/fish" });
   assert.deepEqual(probes[0], {
     shell: "/usr/bin/fish",
-    args: ["-l", "-i", "-c", probeScript("opencode")],
+    args: ["-l", "-i", "-c", probeScript("opencode", "/usr/bin/fish")],
   });
   assert.deepEqual(probes.at(-1), {
     shell: "/bin/sh",
-    args: ["-l", "-c", probeScript("opencode")],
+    args: ["-l", "-c", probeScript("opencode", "/bin/sh")],
   });
   assert.deepEqual(
     probes.map((probe) => probe.shell),
@@ -731,6 +731,80 @@ test("a login shell's PATH widens the search before the guesses do", () => {
   assert.equal(candidates[1], "/home/me/.nvm/versions/node/v22.0.0/bin/opencode");
   assert.equal(candidates.at(-1), "/usr/local/bin/opencode");
   assert.equal(candidatePaths("opencode", undefined).at(-1), "/usr/local/bin/opencode");
+});
+
+test("the probe also asks which OpenCode config files that shell loads", () => {
+  // The Remote-SSH bug this guards: `OPENCODE_CONFIG` is exported from a
+  // profile, the extension host has not seen that profile, and the agent came
+  // up without the config file — so a provider defined only there had no models
+  // to show at all.
+  const script = probeScript("opencode", "/bin/bash");
+  assert.match(script, /printf 'OC_CONFIG=%s=%s\\n' "OPENCODE_CONFIG" "\$OPENCODE_CONFIG"/);
+  assert.match(script, /printf 'OC_CONFIG=%s=%s\\n' "OPENCODE_CONFIG_DIR" "\$OPENCODE_CONFIG_DIR"/);
+});
+
+test("bash is asked for its rc file, because a login shell does not read it", () => {
+  // A login shell stops at `~/.bash_profile`, `~/.bash_login` or `~/.profile`,
+  // and reads `~/.bashrc` only if one of those sources it. Debian and Ubuntu
+  // ship a `~/.profile` that does; a home with only a `~/.bashrc` never gets
+  // read at all, however interactive the shell is — which is how a box with
+  // `export OPENCODE_CONFIG=…` in it could come up without a single model
+  // behind that provider.
+  assert.match(probeScript("opencode", "/bin/bash"), /^\[ -f "\$HOME\/\.bashrc" \] && \. "\$HOME\/\.bashrc"\n/);
+  assert.doesNotMatch(probeScript("opencode", "/bin/zsh"), /bashrc/);
+  assert.doesNotMatch(probeScript("opencode", "/bin/sh"), /bashrc/);
+  // Asked about nothing in particular, it is the plain script.
+  assert.doesNotMatch(probeScript("opencode"), /bashrc/);
+});
+
+test("the config environment a profile exports is read out of the probe", () => {
+  const answer = [
+    "OC_PATH=/usr/bin",
+    "OC_BIN=/usr/bin/opencode",
+    "OC_CONFIG=OPENCODE_CONFIG=/srv/api/omnirouter.json",
+    "OC_CONFIG=OPENCODE_CONFIG_DIR=/srv/api/opencode",
+  ].join("\n");
+
+  assert.deepEqual(parseProbe(answer).configEnv, {
+    OPENCODE_CONFIG: "/srv/api/omnirouter.json",
+    OPENCODE_CONFIG_DIR: "/srv/api/opencode",
+  });
+});
+
+test("a variable the profile never set is not a config environment", () => {
+  // Every shell prints both markers whether or not it exports anything, and a
+  // config file named "" is not one.
+  const answer = "OC_PATH=/usr/bin\nOC_CONFIG=OPENCODE_CONFIG=\nOC_CONFIG=OPENCODE_CONFIG_DIR=\n";
+  assert.deepEqual(parseProbe(answer), { envPath: "/usr/bin", binary: undefined });
+});
+
+test("only the variables OpenCode actually reads are taken from a shell", () => {
+  // A profile is full of variables; passing them on would hand the agent an
+  // environment its own shell never had.
+  const answer = "OC_PATH=/usr/bin\nOC_CONFIG=LD_PRELOAD=/tmp/evil.so\nOC_CONFIG=ANTHROPIC_API_KEY=sk-secret\n";
+  assert.equal(parseProbe(answer).configEnv, undefined);
+});
+
+test("what a shell said sits under what the user configured", () => {
+  // The extension host's environment is the weakest answer: under SSH it is
+  // whatever a non-interactive command gave the server. A login shell knows
+  // more, and a setting the user wrote by hand knows more than either.
+  const composed = composeEnv(
+    { HOME: "/home/me", PATH: "/usr/bin", OPENCODE_CONFIG: "/from/the/host/env.json" },
+    { envPath: "/usr/bin:/home/me/.opencode/bin", configEnv: { OPENCODE_CONFIG: "/from/profile.json" } },
+    { OPENCODE_CONFIG: "/from/settings.json" },
+  );
+
+  assert.equal(composed.OPENCODE_CONFIG, "/from/settings.json");
+  assert.equal(composed.PATH, "/usr/bin:/home/me/.opencode/bin");
+  assert.equal(composed.HOME, "/home/me");
+
+  // Without a setting of their own, the profile's answer is what OpenCode is
+  // started with — that is the whole fix for the remote box.
+  assert.equal(composeEnv({}, { configEnv: { OPENCODE_CONFIG_DIR: "/srv/opencode" } }).OPENCODE_CONFIG_DIR, "/srv/opencode");
+  // And a shell that said nothing leaves the host's environment exactly as it
+  // was, which is the right answer on a box that needs no help.
+  assert.deepEqual(composeEnv({ PATH: "/usr/bin" }, undefined), { PATH: "/usr/bin" });
 });
 
 /* ------------------------------------------------------------------ */
