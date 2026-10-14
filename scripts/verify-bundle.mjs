@@ -66,6 +66,9 @@ const noop = () => new Disposable();
     EventEmitter,
     ViewColumn: { Active: -1, Beside: -2 },
     version: "1.95.0",
+    // The file picker's index reads the workspace through this surface, so the
+    // stub has to offer it for `activate()` to run.
+    FileType: { Unknown: 0, File: 1, Directory: 2, SymbolicLink: 64 },
     Uri: {
       file: (path) => ({ fsPath: path, path, scheme: "file", query: "", toString: () => `file://${path}` }),
       parse: (value) => ({ toString: () => value, scheme: (value.match(/^(\w+):/) ?? [])[1] ?? "file" }),
@@ -122,8 +125,17 @@ const noop = () => new Disposable();
     workspace: {
       workspaceFolders: undefined,
       textDocuments: [],
+      fs: {
+        readDirectory: async () => [],
+        readFile: async () => new Uint8Array(),
+        writeFile: async () => undefined,
+      },
+      asRelativePath: (uri) => uri.fsPath,
       onDidChangeConfiguration: () => noop(),
       onDidChangeWorkspaceFolders: () => noop(),
+      onDidCreateFiles: () => noop(),
+      onDidDeleteFiles: () => noop(),
+      onDidRenameFiles: () => noop(),
       registerTextDocumentContentProvider: () => noop(),
       openTextDocument: async () => ({}),
       getConfiguration: () => ({ get: (key) => SETTINGS[key], has: () => false, inspect: () => undefined }),

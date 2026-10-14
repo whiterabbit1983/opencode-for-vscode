@@ -85,6 +85,50 @@ scenarios = {
     items: [],
   },
 
+  // A turn that has already finished: `busy` is false, but the last message
+  // still carries the streaming marker the agent left on it. The dots have to
+  // be gone anyway — they mean "writing now", not "once wrote this".
+  finished: {
+    ...base,
+    busy: false,
+    items: [
+      { kind: "user", id: "u1", blocks: [{ type: "text", text: "Rename the helper." }] },
+      { kind: "agent", id: "a1", streaming: true, blocks: [{ type: "text", text: "Renamed `clearCounter` to `resetLimit` and updated the two call sites." }] },
+    ],
+  },
+
+  // The same transcript mid-turn, where the dots belong.
+  streaming: {
+    ...base,
+    busy: true,
+    items: [
+      { kind: "user", id: "u1", blocks: [{ type: "text", text: "Rename the helper." }] },
+      { kind: "agent", id: "a1", streaming: true, blocks: [{ type: "text", text: "Renamed `clearCounter` to `resetLimit` and updated the two call sites." }] },
+    ],
+  },
+
+  // The agent is still coming up: same greeting, different wording. Anything
+  // that survives the switch to `welcome` is a greeting that never went away.
+  starting: {
+    ...base,
+    connection: "starting",
+    items: [],
+  },
+
+  // Mixed statuses: only the finished calls collapse. The one running and the
+  // one that failed stay on screen — that is when the user is watching them.
+  mixed: {
+    ...base,
+    busy: true,
+    items: [
+      { kind: "user", id: "u1", blocks: [{ type: "text", text: "Add the endpoint and its test." }] },
+      { kind: "tool", id: "t1", call: { toolCallId: "call_1", title: "Read src/server.ts", name: "read", kind: "read", status: "completed", content: [], locations: [] } },
+      { kind: "tool", id: "t2", call: { toolCallId: "call_2", title: "Search for existing routes", name: "grep", kind: "search", status: "completed", content: [], locations: [] } },
+      { kind: "tool", id: "t3", call: { toolCallId: "call_3", title: "bun test --run", name: "bash", kind: "execute", status: "in_progress", content: [], locations: [] } },
+      { kind: "tool", id: "t4", call: { toolCallId: "call_4", title: "Edit src/routes.ts", name: "edit", kind: "edit", status: "failed", content: [{ type: "text", text: "patch does not apply: context mismatch at line 42" }], locations: [] } },
+    ],
+  },
+
   transcript: {
     ...base,
     plan: [

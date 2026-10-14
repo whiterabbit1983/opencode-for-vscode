@@ -14,7 +14,18 @@ const profileDir = join("/tmp", "opencode-preview-profile");
 
 const scenarios = process.argv.slice(2).length
   ? process.argv.slice(2)
-  : ["transcript", "transcript&expand=3", "permission", "question", "welcome", "error"];
+  : [
+      "transcript",
+      "transcript&expand=1",
+      "mixed",
+      "streaming&dots=1",
+      "finished&dots=0",
+      "permission",
+      "question",
+      "welcome&then=transcript",
+      "starting&then=welcome",
+      "error",
+    ];
 
 const browsers = ["firefox", "google-chrome", "chromium", "chromium-browser"];
 let browser = browsers.find((name) => {

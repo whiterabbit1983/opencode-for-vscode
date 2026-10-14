@@ -131,6 +131,19 @@
         window.__send({ type: "state", state: scenarios[name] || scenarios.transcript });
         window.__steps.push(`sent:${name}`);
 
+        // `?then=<scenario>` pushes a second state through the same webview, so
+        // transitions that only show up over time — the greeting lingering
+        // under the conversation, dots outliving the turn — can be reviewed.
+        const then = new URLSearchParams(location.search).get("then");
+        if (then) {
+          if (!scenarios[then]) {
+            showFailure("then", `unknown scenario "${then}"`);
+          } else {
+            window.__send({ type: "state", state: scenarios[then] });
+            window.__steps.push(`sent:${then}`);
+          }
+        }
+
         // `?expand=<n>` clicks the nth tool-call header so collapsed tool cards
         // can be reviewed without an agent.
         const expand = new URLSearchParams(location.search).get("expand");
@@ -141,7 +154,32 @@
           }
         }
 
-        if (window.__steps.join(" ") !== "api-ready listener-ready post:ready send:state " + `sent:${name}`) {
+        // The greeting belongs to an empty transcript only. Anything left over
+        // once items exist — or a second copy of it — is a greeting that was
+        // never torn down.
+        const greetings = document.querySelectorAll(".welcome").length;
+        if (greetings > 1) {
+          showFailure("duplicated-greeting", `${greetings} greetings on screen at once`);
+        }
+        if (then && scenarios[then]?.items?.length && greetings > 0) {
+          showFailure("stale-greeting", "the welcome screen survived the first message");
+        }
+
+        // `?dots=<n>` pins how many typing indicators are on screen, so a
+        // spinner that outlives its turn cannot pass review.
+        const dots = new URLSearchParams(location.search).get("dots");
+        if (dots !== null) {
+          const found = document.querySelectorAll(".typing").length;
+          if (found !== Number(dots)) {
+            showFailure("dots", `expected ${dots} typing indicator(s), found ${found}`);
+          }
+        }
+
+        // The boot sequence must be identical every run; only the extra `then` state
+        // may follow it.
+        const steps = window.__steps.join(" ");
+        const boot = "api-ready listener-ready post:ready send:state " + `sent:${name}`;
+        if (steps !== boot && !steps.startsWith(boot)) {
           showFailure("steps", window.__steps.join(" -> "));
         }
       })();

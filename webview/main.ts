@@ -63,6 +63,26 @@ interface UiState {
   draft: string;
   /** Answers collected for an open question. */
   questionDrafts: Record<string, Record<string, unknown>>;
+  /** The `@` file picker sitting above the composer. */
+  picker: PickerState;
+}
+
+/**
+ * The `@` file picker.
+ *
+ * `from` is where the `@` token starts in the draft, so accepting a file
+ * replaces the token the user typed rather than appending to the end.
+ */
+interface PickerState {
+  open: boolean;
+  query: string;
+  from: number;
+  files: string[];
+  index: number;
+  /** Echoed back by the host so replies to abandoned queries can be dropped. */
+  requestId: number;
+  /** Waiting on the first reply for this query. */
+  waiting: boolean;
 }
 
 const state: UiState = {
@@ -73,6 +93,7 @@ const state: UiState = {
   menu: "none",
   draft: "",
   questionDrafts: {},
+  picker: { open: false, query: "", from: 0, files: [], index: 0, requestId: 0, waiting: false },
 };
 
 function emptyState(): ChatState {
@@ -91,6 +112,9 @@ function emptyState(): ChatState {
     },
   };
 }
+
+/** Where a grown composer stops growing and starts scrolling. */
+const COMPOSER_MAX_HEIGHT = 240;
 
 const root = document.getElementById("root") as HTMLDivElement;
 const dom: Record<string, HTMLElement> = {};
@@ -146,6 +170,16 @@ function handleHostMessage(message: HostMessage): void {
     case "scrollToEnd":
       scrollToEnd(true);
       return;
+    case "fileResults": {
+      const picker = state.picker;
+      // A reply for a query the user has already moved on from is noise.
+      if (!picker.open || picker.requestId !== message.requestId) {
+        return;
+      }
+      state.picker = { ...picker, files: message.files, index: 0, waiting: false };
+      renderPicker();
+      return;
+    }
     default:
       return;
   }
@@ -189,8 +223,9 @@ function buildShell(): void {
     <div class="transcript" tabindex="0"></div>
     <div class="statusbar"></div>
     <div class="composer">
+      <div class="picker" hidden></div>
       <div class="composer-inner">
-        <textarea rows="1" placeholder="Describe what to build…" spellcheck="true"></textarea>
+        <textarea rows="3" placeholder="Describe what to build…" spellcheck="true" title="Enter to send · Shift+Enter for a new line"></textarea>
         <div class="composer-toolbar">
           <button class="chip" data-menu="mode" title="Choose how OpenCode works">
             <span class="codicon codicon-robot"></span><span class="chip-label">Chat</span>
@@ -222,6 +257,7 @@ function buildShell(): void {
     statusbar: ".statusbar",
     composer: ".composer",
     textarea: ".composer textarea",
+    picker: ".picker",
     menu: ".menu",
     modeChip: '[data-menu="mode"]',
     modelChip: '[data-menu="model"]',
@@ -245,13 +281,27 @@ function wireEvents(): void {
   textarea.addEventListener("input", () => {
     state.draft = textarea.value;
     autosize(textarea);
+    syncPicker(textarea);
   });
 
   textarea.addEventListener("keydown", (event) => {
+    if (state.picker.open && onPickerKey(event)) {
+      return;
+    }
     if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
       event.preventDefault();
       submit(textarea.value);
     }
+  });
+
+  textarea.addEventListener("blur", () => {
+    // A click on a row must still land, so the check is not "the textarea lost
+    // focus" but "focus moved outside the picker entirely".
+    window.setTimeout(() => {
+      if (!document.activeElement?.closest(".picker")) {
+        closePicker();
+      }
+    }, 0);
   });
 
   root.addEventListener("click", (event) => onClick(event));
@@ -392,9 +442,6 @@ function onClick(event: MouseEvent): void {
           post({ type: "runCommand", command: menuCommand(actionEl.dataset.value ?? "") });
         }
         return;
-      case "suggestion":
-        submit(actionEl.dataset.text ?? "");
-        return;
       default:
         return;
     }
@@ -417,6 +464,13 @@ function onClick(event: MouseEvent): void {
   const fileLink = target.closest<HTMLElement>("[data-file]");
   if (fileLink) {
     post({ type: "openFile", path: fileLink.dataset.file ?? "" });
+    return;
+  }
+
+  const pick = target.closest<HTMLElement>("[data-pick]");
+  if (pick) {
+    event.preventDefault();
+    acceptPicker(pick.dataset.pick ?? "");
     return;
   }
 
@@ -464,6 +518,7 @@ function submit(text: string): void {
   state.draft = "";
   const textarea = dom.textarea as HTMLTextAreaElement;
   textarea.value = "";
+  closePicker();
   autosize(textarea);
   post({ type: "send", text: value });
   scrollToEnd(true);
@@ -478,6 +533,8 @@ function insertDraft(text: string): void {
   textarea.selectionStart = textarea.selectionEnd = start + text.length;
   autosize(textarea);
   focusInput();
+  // A pasted or injected `@token` is a mention too, so the picker has to open.
+  syncPicker(textarea);
 }
 
 function focusInput(): void {
@@ -485,14 +542,172 @@ function focusInput(): void {
   textarea?.focus();
 }
 
+/* ------------------------------------------------------------------ */
+/* File picker                                                         */
+/* ------------------------------------------------------------------ */
+
+/**
+ * An `@` at the start of the draft or after a space.
+ *
+ * Requiring that boundary is what keeps `someone@example.com` from opening a
+ * file picker mid-word: the `@` has to be something you typed on purpose.
+ */
+const MENTION = /(^|\s)(@[^\s@]*)$/;
+
+function syncPicker(textarea: HTMLTextAreaElement): void {
+  const caret = textarea.selectionStart ?? textarea.value.length;
+  const match = MENTION.exec(textarea.value.slice(0, caret));
+  if (!match) {
+    closePicker();
+    return;
+  }
+
+  const query = match[2].slice(1);
+  const from = (match.index ?? 0) + match[1].length;
+  const picker = state.picker;
+  if (picker.open && picker.from === from && picker.query === query) {
+    return;
+  }
+
+  state.picker = {
+    open: true,
+    query,
+    from,
+    files: [],
+    index: 0,
+    requestId: picker.requestId + 1,
+    waiting: true,
+  };
+  post({ type: "searchFiles", query, requestId: state.picker.requestId });
+  renderPicker();
+}
+
+function closePicker(): void {
+  if (!state.picker.open) {
+    return;
+  }
+  state.picker = { ...state.picker, open: false, files: [], index: 0, waiting: false };
+  renderPicker();
+}
+
+function movePicker(step: number): void {
+  const { files, index } = state.picker;
+  if (!files.length) {
+    return;
+  }
+  // Wraps, so holding the arrow key walks the list instead of stopping dead.
+  const next = (index + step + files.length) % files.length;
+  state.picker = { ...state.picker, index: next };
+  renderPicker();
+  dom.picker?.querySelector(".picker-row.active")?.scrollIntoView({ block: "nearest" });
+}
+
+/** Puts the chosen file where the `@` was and resumes writing. */
+function acceptPicker(path: string): void {
+  if (!path) {
+    closePicker();
+    return;
+  }
+  const textarea = dom.textarea as HTMLTextAreaElement;
+  const caret = textarea.selectionStart ?? state.picker.from;
+  const insertion = `@${path} `;
+
+  textarea.value = textarea.value.slice(0, state.picker.from) + insertion + textarea.value.slice(caret);
+  state.draft = textarea.value;
+
+  const position = state.picker.from + insertion.length;
+  textarea.selectionStart = textarea.selectionEnd = position;
+  closePicker();
+  autosize(textarea);
+  textarea.focus();
+}
+
+/**
+ * Handles a key while the picker is open.
+ *
+ * Returns whether it consumed the key, so Enter on an empty result falls
+ * through and sends the message as usual.
+ */
+function onPickerKey(event: KeyboardEvent): boolean {
+  switch (event.key) {
+    case "ArrowDown":
+      event.preventDefault();
+      movePicker(1);
+      return true;
+    case "ArrowUp":
+      event.preventDefault();
+      movePicker(-1);
+      return true;
+    case "Enter":
+    case "Tab": {
+      const path = state.picker.files[state.picker.index];
+      if (!path) {
+        closePicker();
+        return event.key === "Tab";
+      }
+      event.preventDefault();
+      acceptPicker(path);
+      return true;
+    }
+    case "Escape":
+      event.preventDefault();
+      closePicker();
+      return true;
+    default:
+      return false;
+  }
+}
+
+function renderPicker(): void {
+  const picker = dom.picker;
+  if (!picker) {
+    return;
+  }
+  if (!state.picker.open) {
+    picker.hidden = true;
+    picker.innerHTML = "";
+    return;
+  }
+
+  const { files, index, waiting, query } = state.picker;
+  const rows = files
+    .map((path, i) => {
+      const slash = path.lastIndexOf("/");
+      const dir = slash === -1 ? "" : path.slice(0, slash + 1);
+      const name = slash === -1 ? path : path.slice(slash + 1);
+      return `<button class="picker-row${i === index ? " active" : ""}" role="option" aria-selected="${i === index}" data-pick="${escapeHtml(path)}">
+        <span class="codicon codicon-file"></span>
+        <span class="picker-path">${escapeHtml(dir)}<span class="picker-name">${escapeHtml(name)}</span></span>
+      </button>`;
+    })
+    .join("");
+
+  picker.innerHTML = waiting
+    ? `<div class="picker-empty">Searching…</div>`
+    : rows || `<div class="picker-empty">No file matches “${escapeHtml(query)}”</div>`;
+  picker.hidden = false;
+}
+
+/**
+ * Grows the composer to fit what was typed, then scrolls.
+ *
+ * `height: auto` first: the box only shrinks back down if the height it is
+ * measuring is not the one it is using.
+ */
 function autosize(textarea: HTMLTextAreaElement): void {
   textarea.style.height = "auto";
-  textarea.style.height = `${Math.min(textarea.scrollHeight, 180)}px`;
+  textarea.style.height = `${Math.min(textarea.scrollHeight, COMPOSER_MAX_HEIGHT)}px`;
 }
 
 function applyFontSize(): void {
   const size = state.chat.fonts?.size ?? 0;
   document.documentElement.style.setProperty("--oc-size", size > 0 ? `${size}px` : "13px");
+  // The cached height was measured in the old type size, so it has to be
+  // measured again in the new one.
+  const textarea = dom.textarea as HTMLTextAreaElement | undefined;
+  if (textarea) {
+    autosize(textarea);
+  }
 }
 
 /* ------------------------------------------------------------------ */
@@ -826,34 +1041,59 @@ function planIcon(status: string): string {
   return "codicon-circle-outline";
 }
 
+/** One top-level element of the transcript. */
+interface TranscriptUnit {
+  /** Cache key; also written to `data-id` on the element. */
+  key: string;
+  /** Changes whenever the HTML below it changes, so a stale element is rebuilt. */
+  signature: string;
+  className: string;
+  html: string;
+}
+
+/**
+ * What the transcript is made of, top to bottom.
+ *
+ * The greeting counts as a unit like any other, so the first message tears it
+ * down instead of leaving it stranded below the conversation.
+ */
+function transcriptUnits(): TranscriptUnit[] {
+  const items = visibleItems();
+  if (items.length) {
+    return itemUnits(items);
+  }
+  // Hidden thoughts leave nothing to draw, but the user has already spoken, so
+  // the greeting must not come back at them.
+  return state.chat.items.length ? [] : [welcomeUnit()];
+}
+
 function renderTranscript(): void {
   const transcript = dom.transcript;
   const wasAtBottom = isAtBottom(transcript);
 
-  const items = visibleItems();
-  if (!items.length) {
-    transcript.innerHTML = welcomeHtml();
-    rendered.clear();
-    return;
-  }
-
   const seen = new Set<string>();
   let previous: HTMLElement | null = null;
 
-  for (const item of items) {
-    seen.add(item.id);
-    const signature = itemSignature(item);
-    const cached = rendered.get(item.id);
+  for (const unit of transcriptUnits()) {
+    seen.add(unit.key);
+    const cached = rendered.get(unit.key);
 
     let element: HTMLElement;
-    if (cached && cached.signature === signature) {
+    if (cached && cached.signature === unit.signature) {
       element = cached.element;
     } else {
       element = document.createElement("div");
-      element.className = `item item-${item.kind}`;
-      element.dataset.id = item.id;
-      element.innerHTML = itemHtml(item);
-      rendered.set(item.id, { signature, element });
+      element.className = unit.className;
+      element.dataset.id = unit.key;
+      element.innerHTML = unit.html;
+      rendered.set(unit.key, { signature: unit.signature, element });
+      if (cached) {
+        // A rebuilt element has to take the old one's place in the DOM. Adding
+        // it by the walk below instead would leave the old one behind with
+        // nothing left pointing at it, and it would stay on screen for good —
+        // the greeting outliving the connection state that drew it.
+        cached.element.replaceWith(element);
+      }
     }
 
     const expected: Element | null = previous ? previous.nextElementSibling : transcript.firstElementChild;
@@ -880,16 +1120,16 @@ function renderTranscript(): void {
 }
 
 function rerenderItem(itemElement: HTMLElement): void {
-  const id = itemElement.dataset.id;
-  if (!id) {
+  const key = itemElement.dataset.id;
+  if (!key) {
     return;
   }
-  const item = state.chat.items.find((entry) => entry.id === id);
-  if (!item) {
+  const unit = transcriptUnits().find((entry) => entry.key === key);
+  if (!unit) {
     return;
   }
-  itemElement.innerHTML = itemHtml(item);
-  rendered.set(id, { signature: itemSignature(item), element: itemElement });
+  itemElement.innerHTML = unit.html;
+  rendered.set(key, { signature: unit.signature, element: itemElement });
 }
 
 function visibleItems(): ChatItem[] {
@@ -902,23 +1142,88 @@ function visibleItems(): ChatItem[] {
   });
 }
 
+/**
+ * Folds the items into what is actually drawn.
+ *
+ * Consecutive finished tool calls collapse into a single summary row: a turn
+ * can run dozens of them, and a card each buries the answer the user came
+ * for. Calls that are running or failed keep their own row, because that is
+ * exactly when they are worth watching.
+ */
+function itemUnits(items: ChatItem[]): TranscriptUnit[] {
+  const units: TranscriptUnit[] = [];
+  let finished: ToolCall[] = [];
+
+  const flush = (): void => {
+    if (!finished.length) {
+      return;
+    }
+    units.push(toolUnit(finished));
+    finished = [];
+  };
+
+  for (const item of items) {
+    if (item.kind === "tool" && item.call.status === "completed") {
+      finished.push(item.call);
+      continue;
+    }
+    flush();
+    units.push({
+      key: item.id,
+      signature: itemSignature(item),
+      className: `item item-${item.kind}`,
+      html: itemHtml(item),
+    });
+  }
+  flush();
+  return units;
+}
+
+/**
+ * One tool call on its own, or a run of them behind a single summary row.
+ *
+ * A lone call keeps its own card: its title carries the detail ("Read
+ * src/rate-limit.ts") that a summary would throw away.
+ */
+function toolUnit(calls: ToolCall[]): TranscriptUnit {
+  if (calls.length === 1) {
+    const call = calls[0];
+    return {
+      key: `tool:${call.toolCallId}`,
+      signature: toolSignature(call),
+      className: "item item-tool",
+      html: toolHtml(call),
+    };
+  }
+
+  // The run is keyed by its first call, which never changes once finished, so
+  // the row survives the rest of the run filling in around it.
+  const key = `tools:${calls[0].toolCallId}`;
+  return {
+    key,
+    signature: JSON.stringify([
+      calls.map((call) => [call.toolCallId, call.title, call.content, call.locations, call.childSession]),
+      state.openTools.has(key),
+      state.chat.options.maxToolOutputLines,
+      state.chat.options.diffView,
+    ]),
+    className: "item item-tool",
+    html: toolRunHtml(calls, key),
+  };
+}
+
 function itemSignature(item: ChatItem): string {
   switch (item.kind) {
     case "agent":
+      // The dots are part of the HTML, so `streaming` and `busy` have to be
+      // part of the signature or the animation is never taken back down.
+      return JSON.stringify([item.kind, item.blocks, item.streaming, state.chat.busy]);
     case "thought":
-    case "user":
-      return JSON.stringify([item.kind, item.blocks, state.chat.options.showThoughts, state.openThoughts.has(item.id)]);
+      return JSON.stringify([item.kind, item.blocks, item.streaming, state.openThoughts.has(item.id)]);
     case "tool":
-      return JSON.stringify([
-        item.call.status,
-        item.call.title,
-        item.call.content,
-        item.call.locations,
-        item.call.childSession,
-        state.openTools.has(item.call.toolCallId),
-        state.chat.options.maxToolOutputLines,
-        state.chat.options.diffView,
-      ]);
+      return toolSignature(item.call);
+    case "user":
+      return JSON.stringify([item.kind, item.blocks]);
     case "permission":
       return JSON.stringify([item.request, item.resolved]);
     case "question":
@@ -928,12 +1233,25 @@ function itemSignature(item: ChatItem): string {
   }
 }
 
+function toolSignature(call: ToolCall): string {
+  return JSON.stringify([
+    call.status,
+    call.title,
+    call.content,
+    call.locations,
+    call.childSession,
+    state.openTools.has(call.toolCallId),
+    state.chat.options.maxToolOutputLines,
+    state.chat.options.diffView,
+  ]);
+}
+
 function itemHtml(item: ChatItem): string {
   switch (item.kind) {
     case "user":
       return `<div class="bubble-user">${renderBlocks(item.blocks)}</div>`;
     case "agent":
-      return `${renderBlocks(item.blocks)}${item.streaming ? typingDots() : ""}`;
+      return `${renderBlocks(item.blocks)}${isWriting(item) ? typingDots() : ""}`;
     case "thought":
       return thoughtHtml(item.id, item.blocks);
     case "tool":
@@ -953,6 +1271,17 @@ function itemHtml(item: ChatItem): string {
   }
 }
 
+/**
+ * Whether the "agent is writing" dots belong on screen.
+ *
+ * Both halves have to hold: the message is still open *and* a turn is running.
+ * Trusting the message alone leaves the animation spinning forever whenever a
+ * turn settles some other way than by finishing its last message.
+ */
+function isWriting(item: Extract<ChatItem, { kind: "agent" | "thought" }>): boolean {
+  return item.streaming === true && state.chat.busy;
+}
+
 function thoughtHtml(id: string, blocks: Block[]): string {
   const open = state.openThoughts.has(id);
   const text = blocksToText(blocks);
@@ -965,8 +1294,74 @@ function thoughtHtml(id: string, blocks: Block[]): string {
   `;
 }
 
-function toolHtml(call: ToolCall): string {
-  const open = state.openTools.has(call.toolCallId);
+/**
+ * A run of finished tool calls as one row.
+ *
+ * Collapsed it only says what happened ("Read 3 files · Edited 1 file");
+ * opened it lists every call in the run with its diff and output. The
+ * alternative — leaving each call on screen — buries the agent's answer under
+ * a column of cards the user cannot do anything with.
+ */
+function toolRunHtml(calls: ToolCall[], key: string): string {
+  const open = state.openTools.has(key);
+  return `
+    <div class="tool tool-run" data-open="${open}">
+      <button class="tool-head" data-action="toggle-tool" data-id="${escapeHtml(key)}" aria-expanded="${open}">
+        <span class="tool-icon codicon codicon-check"></span>
+        <span class="tool-title">${escapeHtml(summariseTools(calls))}</span>
+        <span class="tool-badge">${calls.length} tools</span>
+        <span class="tool-chevron codicon codicon-chevron-right"></span>
+      </button>
+      ${open ? `<div class="tool-body tool-run-body">${calls.map((call) => toolHtml(call, true)).join("")}</div>` : ""}
+    </div>
+  `;
+}
+
+/** Buckets a call is summarised into, most specific first. */
+const TOOL_GROUPS: Array<{ verb: string; noun: string; match: RegExp }> = [
+  { verb: "Read", noun: "file", match: /(read|view|open|cat)/ },
+  { verb: "Searched", noun: "match", match: /(grep|glob|search|list|find|query)/ },
+  { verb: "Edited", noun: "file", match: /(edit|write|patch|apply|create|update)/ },
+  { verb: "Changed", noun: "file", match: /(delete|remove|move|rename)/ },
+  { verb: "Ran", noun: "command", match: /(bash|shell|exec|command|terminal|task|run)/ },
+];
+
+/**
+ * Says what a run of tool calls amounted to.
+ *
+ * The per-call titles are the detail a summary is standing in for — repeating
+ * them would be as noisy as the cards it replaces — so calls are bucketed by
+ * what they do instead.
+ */
+function summariseTools(calls: ToolCall[]): string {
+  const buckets: Array<{ verb: string; noun: string; count: number }> = [];
+
+  for (const call of calls) {
+    const haystack = `${call.name ?? ""} ${call.kind ?? ""}`.toLowerCase();
+    const group = TOOL_GROUPS.find((entry) => entry.match.test(haystack));
+    const verb = group?.verb ?? "Used";
+    const noun = group?.noun ?? "tool";
+    const existing = buckets.find((bucket) => bucket.verb === verb);
+    if (existing) {
+      existing.count += 1;
+    } else {
+      buckets.push({ verb, noun, count: 1 });
+    }
+  }
+
+  return buckets
+    .map(({ verb, noun, count }) => (count > 1 ? `${verb} ${count} ${noun}s` : `${verb} ${noun}`))
+    .join(" · ");
+}
+
+/**
+ * One tool call.
+ *
+ * `nested` marks a call drawn inside an opened run: its body is always shown
+ * and its head is a label rather than a second toggle to discover.
+ */
+function toolHtml(call: ToolCall, nested = false): string {
+  const open = nested || state.openTools.has(call.toolCallId);
   const status = call.status ?? "pending";
   const outputs = call.content.filter((entry) => entry.type === "text") as Array<{ type: "text"; text: string }>;
   const diffs = call.content.filter((entry) => entry.type === "diff") as Array<{
@@ -1008,9 +1403,7 @@ function toolHtml(call: ToolCall): string {
       : "",
   ].join("");
 
-  return `
-    <div class="tool" data-status="${status}" data-open="${open}">
-      <button class="tool-head" data-action="toggle-tool" data-id="${escapeHtml(call.toolCallId)}" aria-expanded="${open}">
+  const head = `
         <span class="tool-icon codicon ${statusIcon}"></span>
         <span class="tool-title">${escapeHtml(call.title)}</span>
         ${
@@ -1018,9 +1411,16 @@ function toolHtml(call: ToolCall): string {
             ? `<span class="tool-child">${escapeHtml(call.childSession.title ?? `subagent · depth ${call.childSession.depth}`)}</span>`
             : ""
         }
-        ${open && body ? `<span class="tool-badge">${escapeHtml(call.name ?? call.kind ?? "")}</span>` : ""}
-        <span class="tool-chevron codicon codicon-chevron-right"></span>
-      </button>
+        ${open && body && !nested ? `<span class="tool-badge">${escapeHtml(call.name ?? call.kind ?? "")}</span>` : ""}
+        ${nested ? "" : `<span class="tool-chevron codicon codicon-chevron-right"></span>`}`;
+
+  return `
+    <div class="tool${nested ? " tool-nested" : ""}" data-status="${status}" data-open="${open}">
+      ${
+        nested
+          ? `<div class="tool-head">${head}</div>`
+          : `<button class="tool-head" data-action="toggle-tool" data-id="${escapeHtml(call.toolCallId)}" aria-expanded="${open}">${head}</button>`
+      }
       ${open && body ? `<div class="tool-body">${body}</div>` : ""}
     </div>
   `;
@@ -1227,36 +1627,39 @@ function noticeHtml(severity: string, title: string, description?: string): stri
   </div>`;
 }
 
-function welcomeHtml(): string {
-  const cwd = state.chat.cwd;
-  const connection = state.chat.connection;
-  const connecting = connection === "starting" || connection === "stopped";
-  const failed = connection === "error";
+function welcomeUnit(): TranscriptUnit {
+  const { connection, connectionMessage, cwd } = state.chat;
+  return {
+    key: "welcome",
+    signature: JSON.stringify([connection, connectionMessage, cwd]),
+    className: "welcome",
+    html: welcomeHtml(),
+  };
+}
 
-  if (failed) {
-    return `<div class="welcome">
-      <h1>OpenCode isn't running</h1>
-      <p>${escapeHtml(state.chat.connectionMessage ?? "The agent process is not responding.")}</p>
-    </div>`;
+function welcomeHtml(): string {
+  const { connection, connectionMessage, cwd } = state.chat;
+
+  if (connection === "error") {
+    return `<h1>OpenCode isn't running</h1>
+      <p>${escapeHtml(connectionMessage ?? "The agent process is not responding.")}</p>`;
   }
 
-  return `<div class="welcome">
-    <h1>${connecting ? "Starting OpenCode…" : "What should we build?"}</h1>
-    <p>${
-      connecting
-        ? `Connecting to the agent${cwd ? ` in <code>${escapeHtml(basename(cwd))}</code>` : ""}.`
-        : `Ask anything about <code>${escapeHtml(basename(cwd ?? "this folder"))}</code>. OpenCode reads and edits your files, so it asks before running anything.`
-    }</p>
-    ${
-      connecting
-        ? `<div class="typing"><span></span><span></span><span></span></div>`
-        : `<div class="suggestions">
-            <button class="suggestion" data-action="suggestion" data-text="Explain the structure of this project and how the main pieces fit together.">Explain how this project is organised</button>
-            <button class="suggestion" data-action="suggestion" data-text="Find and fix the most obvious bug in this codebase.">Find a bug worth fixing</button>
-            <button class="suggestion" data-action="suggestion" data-text="Add tests for the code I have open in the editor.">Add tests for the current file</button>
-          </div>`
-    }
-  </div>`;
+  // The dots belong to an agent that is on its way in. Everywhere else they
+  // would outlive the thing they were waiting for.
+  if (connection === "starting") {
+    return `<h1>Starting OpenCode…</h1>
+      <p>${
+        cwd
+          ? `Connecting to the agent in <code>${escapeHtml(basename(cwd))}</code>.`
+          : "Connecting to the agent."
+      } ${typingDots()}</p>`;
+  }
+
+  return `<h1>What should we build?</h1>
+    <p>Ask anything about <code>${escapeHtml(
+      basename(cwd ?? "this folder"),
+    )}</code>. OpenCode reads and edits your files, so it asks before running anything.</p>`;
 }
 
 /* ------------------------------------------------------------------ */

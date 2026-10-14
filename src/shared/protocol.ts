@@ -163,6 +163,7 @@ export type HostMessage =
     }
   | { type: "scrollToEnd" }
   | { type: "insertDraft"; text: string }
+  | { type: "fileResults"; requestId: number; files: string[] }
   | { type: "submitDraft"; text: string }
   | { type: "openLink"; href: string }
   | { type: "focusInput" }
@@ -189,6 +190,7 @@ export type WebviewMessage =
     }
   | { type: "setMode"; modeId: string }
   | { type: "setConfigOption"; configId: string; value: string }
+  | { type: "searchFiles"; query: string; requestId: number }
   | { type: "openFile"; path: string; line?: number }
   | { type: "openDiff"; path: string; oldText: string; newText: string }
   | { type: "openLink"; href: string }

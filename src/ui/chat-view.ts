@@ -5,6 +5,7 @@ import { describeError, log } from "../logger.js";
 import type { ChatState, HostMessage, WebviewMessage } from "../shared/protocol.js";
 import { EXTENSION_VERSION } from "../version.js";
 import type { DiffPreviewProvider } from "./diff-preview.js";
+import { FileIndex } from "./file-search.js";
 
 export interface ChatViewOptions {
   /** Session to restore when the agent is started for the first time. */
@@ -25,6 +26,7 @@ export class ChatViewHost implements vscode.WebviewViewProvider {
 
   private view?: vscode.WebviewView;
   private panel?: vscode.WebviewPanel;
+  private readonly files = new FileIndex();
   private viewReady = false;
   private panelReady = false;
   private started = false;
@@ -221,6 +223,12 @@ export class ChatViewHost implements vscode.WebviewViewProvider {
           await this.session.setConfigOption(message.configId, message.value);
           return;
 
+        case "searchFiles": {
+          const files = await this.files.search(message.query);
+          this.post({ type: "fileResults", requestId: message.requestId, files });
+          return;
+        }
+
         case "openFile":
           await this.openFile(message.path, message.line);
           return;
@@ -378,6 +386,7 @@ export class ChatViewHost implements vscode.WebviewViewProvider {
       clearTimeout(this.transcriptTimer);
       this.transcriptTimer = undefined;
     }
+    this.files.dispose();
     for (const disposable of this.disposables) {
       disposable.dispose();
     }

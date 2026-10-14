@@ -21,11 +21,8 @@ function inRoundedRect(x, y, left, top, right, bottom, radius) {
   return dx * dx + dy * dy <= radius * radius;
 }
 
-// The mark: two rounded blocks that step down to the right, matching the SVG.
-const BLOCKS = [
-  { l: 0.14, t: 0.16, r: 0.58, b: 0.82, radius: 0.11 },
-  { l: 0.48, t: 0.44, r: 0.88, b: 0.92, radius: 0.11 },
-];
+// The mark: a single rounded rectangle, matching the SVG.
+const BLOCKS = [{ l: 0.142, t: 0.208, r: 0.858, b: 0.792, radius: 0.092 }];
 
 function coverage(x, y) {
   let hits = 0;

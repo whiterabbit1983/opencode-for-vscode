@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { Thread, isReadOnlyTool, toBlock } from "../src/session/thread.js";
+import { rankFiles } from "../src/ui/file-rank.js";
 import { chooseAutomatically, destructiveReason, sliceLines, toFormFields } from "../src/session/policy.js";
 import { diffLines } from "../webview/diff.js";
 import { escapeHtml, highlight, renderMarkdown, sanitizeUrl } from "../webview/markdown.js";
@@ -351,6 +352,58 @@ test("a _custom companion attaches to its select", () => {
   assert.equal(fields[0].control, "select");
   assert.equal(fields[0].customKey, "pm_custom");
   assert.equal(fields.length, 1);
+});
+
+/* ------------------------------------------------------------------ */
+/* File picker                                                         */
+/* ------------------------------------------------------------------ */
+
+// The index stores its files alphabetically, which is what an empty query
+// hands back.
+const workspace = [
+  "docs/rate-limiting.md",
+  "rate.ts",
+  "src/index.ts",
+  "src/rate-limit.ts",
+  "src/server/rate.ts",
+];
+
+test("an empty query offers the top of the workspace", () => {
+  assert.deepEqual(rankFiles(workspace, "", 3), ["docs/rate-limiting.md", "rate.ts", "src/index.ts"]);
+});
+
+test("a file-name match outranks a path match", () => {
+  // `src/session.ts` only matches in its path, so it sorts below every file
+  // whose *name* starts with the query.
+  assert.deepEqual(rankFiles([...workspace, "src/session.ts"], "rate"), [
+    "rate.ts",
+    "docs/rate-limiting.md",
+    "src/rate-limit.ts",
+    "src/server/rate.ts",
+  ]);
+});
+
+test("matches too shallow in the tree come first", () => {
+  assert.deepEqual(rankFiles(workspace, "rate")[0], "rate.ts");
+});
+
+test("matching ignores case", () => {
+  assert.deepEqual(rankFiles(workspace, "RATE-LIMIT"), rankFiles(workspace, "rate-limit"));
+  assert.ok(rankFiles(workspace, "RATE-LIMIT").includes("src/rate-limit.ts"));
+});
+
+test("an exact file name beats a longer one that starts the same", () => {
+  assert.equal(rankFiles(["src/rate.ts", "rate.ts"], "rate.ts")[0], "rate.ts");
+});
+
+test("no matches yields nothing to show", () => {
+  assert.deepEqual(rankFiles(workspace, "zzz"), []);
+});
+
+test("the picker never returns more than it shows", () => {
+  const many = Array.from({ length: 500 }, (_, index) => `src/file-${index}.ts`);
+  assert.equal(rankFiles(many, "file", 40).length, 40);
+  assert.equal(rankFiles(many, "", 40).length, 40);
 });
 
 /* ------------------------------------------------------------------ */
