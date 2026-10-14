@@ -135,31 +135,6 @@
     ],
     "menus": {
       "view/title": [
-        {
-          "command": "opencode.chat.newSession",
-          "when": "view == opencode.chat",
-          "group": "navigation@1"
-        },
-        {
-          "command": "opencode.chat.pickSession",
-          "when": "view == opencode.chat",
-          "group": "navigation@2"
-        },
-        {
-          "command": "opencode.chat.restart",
-          "when": "view == opencode.chat",
-          "group": "1_configure@1"
-        },
-        {
-          "command": "opencode.chat.signIn",
-          "when": "view == opencode.chat",
-          "group": "1_configure@2"
-        },
-        {
-          "command": "opencode.chat.signIn",
-          "when": "view == opencode.chat && opencode.needsAuth",
-          "group": "navigation@3"
-        }
       ],
       "editor/context": [
         {
