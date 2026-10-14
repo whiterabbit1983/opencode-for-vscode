@@ -1,12 +1,23 @@
 import * as vscode from "vscode";
 
 import { onSettingsChanged, readSettings } from "./config.js";
+import { isUsage } from "./shared/usage.js";
 import { describeError, log } from "./logger.js";
 import { ChatSession } from "./session/chat-session.js";
 import { registerDiffProviders } from "./ui/diff-preview.js";
 import { ChatViewHost } from "./ui/chat-view.js";
 
 const SESSION_KEY = "opencode.lastSession";
+/**
+ * Global on purpose: the TUI keeps its model memory in a single user-wide
+ * `model.json`, so switching folders does not reset the model here either.
+ */
+const MODEL_KEY = "opencode.lastModel";
+/**
+ * Global for the same reason as the model: the figures belong to a model, not
+ * to a folder, so opening another workspace should not blank the counter.
+ */
+const USAGE_KEY = "opencode.lastUsage";
 
 /** Workspace files offered when there is no editor to attach. */
 const WORKSPACE_FILE_GLOB = "**/*";
@@ -18,7 +29,23 @@ let session: ChatSession | undefined;
 
 export function activate(context: vscode.ExtensionContext): void {
   const diffs = registerDiffProviders(context);
-  session = new ChatSession((workspaceUri) => workspaceUri?.fsPath ?? firstWorkspacePath(context));
+  session = new ChatSession(
+    (workspaceUri) => workspaceUri?.fsPath ?? firstWorkspacePath(context),
+    {
+      read: () => {
+        const value = context.globalState.get<unknown>(MODEL_KEY);
+        return typeof value === "string" ? value : undefined;
+      },
+      write: (modelId) => void context.globalState.update(MODEL_KEY, modelId),
+    },
+    {
+      read: () => {
+        const value = context.globalState.get<unknown>(USAGE_KEY);
+        return isUsage(value) ? value : undefined;
+      },
+      write: (usage) => void context.globalState.update(USAGE_KEY, usage),
+    },
+  );
 
   view = new ChatViewHost(context.extensionUri, session, diffs, {
     lastSessionId: () => readLastSession(context),

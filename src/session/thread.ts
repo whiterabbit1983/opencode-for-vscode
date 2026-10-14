@@ -1,6 +1,6 @@
 import type { SessionUpdate } from "@agentclientprotocol/sdk";
 
-import type { Block, ChatItem, PlanEntry, ToolCall, ToolCallContent, ToolStatus } from "../shared/protocol.js";
+import type { Block, ChatItem, PlanEntry, ToolCall, ToolCallContent, ToolStatus, UserItem } from "../shared/protocol.js";
 
 type Update = SessionUpdate;
 
@@ -46,6 +46,16 @@ export class Thread {
   items: ChatItem[] = [];
   plan?: PlanEntry[];
   usage?: { used: number; size: number; cost?: { amount: number; currency: string } };
+  /**
+   * The reading this session actually streamed, as opposed to whatever is
+   * currently on display.
+   *
+   * A reopened chat is seeded with the last remembered figures, so `usage`
+   * alone cannot answer whether the agent has spoken this session — and that
+   * is what decides if the end-of-turn session total is a fallback or a
+   * regression of good data.
+   */
+  liveUsage?: { used: number; size: number; cost?: { amount: number; currency: string } };
   retry?: RetryMeta;
   compaction?: CompactionMeta;
 
@@ -57,6 +67,7 @@ export class Thread {
     this.items = [];
     this.plan = undefined;
     this.usage = undefined;
+    this.liveUsage = undefined;
     this.retry = undefined;
     this.compaction = undefined;
     this.nextId = 1;
@@ -82,9 +93,9 @@ export class Thread {
     return undefined;
   }
 
-  addUser(blocks: Block[]): ChatItem {
+  addUser(blocks: Block[]): UserItem {
     this.closeMessage();
-    const item: ChatItem = { kind: "user", id: this.id("user"), blocks };
+    const item: UserItem = { kind: "user", id: this.id("user"), blocks };
     this.items.push(item);
     return item;
   }
@@ -166,11 +177,12 @@ export class Thread {
         return;
 
       case "usage_update":
-        this.usage = {
+        this.liveUsage = {
           used: update.used,
           size: update.size,
           cost: update.cost ? { amount: update.cost.amount, currency: update.cost.currency } : undefined,
         };
+        this.usage = this.liveUsage;
         return;
 
       case "notice":

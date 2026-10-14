@@ -107,6 +107,41 @@ scenarios = {
     ],
   },
 
+  // Two messages waiting behind a running turn. Neither has a transcript
+  // bubble: they sit above the composer, numbered in the order they will run.
+  queue: {
+    ...base,
+    busy: true,
+    items: [
+      { kind: "user", id: "u1", blocks: [{ type: "text", text: "Add rate limiting to the public routes." }] },
+      { kind: "agent", id: "a1", streaming: true, blocks: [{ type: "text", text: "Looking at the router first." }] },
+    ],
+    queue: [
+      {
+        id: "queued-1",
+        preview: "Also cover the burst case in the test.",
+        blocks: [{ type: "text", text: "Also cover the burst case in the test." }],
+      },
+      {
+        id: "queued-2",
+        preview: "Then run the suite and tell me if anything else regressed.",
+        blocks: [{ type: "text", text: "Then run the suite and tell me if anything else regressed." }],
+      },
+    ],
+  },
+
+  // The same queue after the turn it was waiting on failed, so the messages
+  // come back into the transcript marked unsent rather than vanishing.
+  "queue-dropped": {
+    ...base,
+    busy: false,
+    items: [
+      { kind: "user", id: "u1", blocks: [{ type: "text", text: "Add rate limiting to the public routes." }] },
+      { kind: "user", id: "u2", status: "dropped", blocks: [{ type: "text", text: "Also cover the burst case in the test." }] },
+      { kind: "notice", id: "n1", severity: "warning", title: "Queued messages discarded", description: "This turn failed before the queue could run." },
+    ],
+  },
+
   // The agent is still coming up: same greeting, different wording. Anything
   // that survives the switch to `welcome` is a greeting that never went away.
   starting: {

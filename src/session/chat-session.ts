@@ -33,6 +33,8 @@ import type {
   SessionSummary,
 } from "../shared/protocol.js";
 import { modelName } from "../shared/model-name.js";
+import { isPersistable, mergeUsage, noUsageMemory, type Usage, type UsageMemory } from "../shared/usage.js";
+import { modelToRestore, noModelMemory, type ModelMemory } from "./model-memory.js";
 import { chooseAutomatically, destructiveReason, sliceLines, toFormFields } from "./policy.js";
 import { isReadOnlyTool, Thread, toBlock } from "./thread.js";
 
@@ -51,6 +53,18 @@ type PendingQuestion = {
 };
 
 /**
+ * A prompt waiting behind a running turn.
+ *
+ * There is no transcript item yet: the message joins the transcript at the
+ * moment it starts running, which is where it belongs chronologically and
+ * keeps a queued prompt from looking like something the agent already has.
+ */
+type QueuedPrompt = {
+  id: string;
+  prompt: ContentBlock[];
+};
+
+/**
  * Owns the conversation: the transcript, the active ACP session, and the
  * request/response cycle for permissions and questions raised by the agent.
  */
@@ -61,6 +75,7 @@ export class ChatSession implements vscode.Disposable {
   private sessionId?: string;
   private cwd?: string;
   private busy = false;
+  private readonly queuedPrompts: QueuedPrompt[] = [];
   private connection: ChatState["connection"] = "stopped";
   private connectionMessage?: string;
   private authRequired = false;
@@ -73,6 +88,8 @@ export class ChatSession implements vscode.Disposable {
   private readonly permissions = new Map<string, PendingPermission>();
   private readonly questions = new Map<string, PendingQuestion>();
   private counter = 0;
+  /** Ids for the composer queue, which has no transcript item to borrow from. */
+  private queueSeq = 0;
 
   private readonly onChanged = new vscode.EventEmitter<void>();
   readonly changed = this.onChanged.event;
@@ -80,7 +97,11 @@ export class ChatSession implements vscode.Disposable {
   private readonly onTranscriptChanged = new vscode.EventEmitter<void>();
   readonly transcriptChanged = this.onTranscriptChanged.event;
 
-  constructor(private readonly cwdForSession: (workspaceUri: vscode.Uri | undefined) => string) {
+  constructor(
+    private readonly cwdForSession: (workspaceUri: vscode.Uri | undefined) => string,
+    private readonly modelMemory: ModelMemory = noModelMemory(),
+    private readonly usageMemory: UsageMemory = noUsageMemory(),
+  ) {
     this.agent = new OpenCodeAgent({
       sessionUpdate: (notification) => this.handleSessionUpdate(notification),
       requestPermission: (params) => this.handlePermission(params),
@@ -122,6 +143,7 @@ export class ChatSession implements vscode.Disposable {
       model: currentModel(this.configOptions),
       usage: this.thread.usage,
       retry: this.thread.retry,
+      queue: this.queueView(),
       fonts: { size: settings.fontSize },
       authInProgress: this.authInProgress,
       options: {
@@ -183,6 +205,7 @@ export class ChatSession implements vscode.Disposable {
         // The agent is gone, so nothing will answer these. Settle them now
         // instead of leaving the user staring at a prompt that does nothing.
         this.cancelAllPending(`agent ${status}`);
+        this.dropQueuedPrompts(`OpenCode ${status === "error" ? "failed" : "stopped"} before these were sent.`);
         this.connection = status === "error" ? "error" : "stopped";
         this.connectionMessage = detail;
         this.busy = false;
@@ -243,7 +266,79 @@ export class ChatSession implements vscode.Disposable {
     this.cwd = cwd;
     this.modes = toModes(response.modes);
     this.configOptions = toConfigOptions(response.configOptions);
+    this.seedUsage();
+    await this.applyRememberedModel();
     this.emitTranscript();
+  }
+
+  /**
+   * Puts a fresh session back on the model the user last chose.
+   *
+   * Only fresh sessions get this treatment: a resumed conversation already
+   * carries the model it was created with, and rewriting it would be
+   * surprising.
+   */
+  private async applyRememberedModel(): Promise<void> {
+    const restore = modelToRestore(this.configOptions, this.modelMemory.read());
+    if (!restore) {
+      return;
+    }
+    log.info("restoring remembered model %s", restore.value);
+    await this.setConfigOption(restore.configId, restore.value);
+  }
+
+  /**
+   * Puts the last known context reading back on the status bar.
+   *
+   * Neither `session/new` nor `session/load` reports usage, so a chat opened
+   * at rest would otherwise show nothing at all until a turn streamed an
+   * update. The figures are deliberately not marked as live: the next
+   * `usage_update` overwrites them, and until then they are the honest
+   * "as of the end of the last turn" reading.
+   */
+  private seedUsage(): void {
+    const remembered = this.usageMemory.read();
+    if (!isPersistable(remembered)) {
+      return;
+    }
+    this.thread.usage = remembered;
+    this.persistedUsage = remembered;
+  }
+
+  /**
+   * Writes the reading out so the next chat has something to seed from.
+   *
+   * Guarded on identity because a turn streams a `usage_update` per chunk, and
+   * `usage_update` is the only place cost arrives, so most of them would be
+   * the same write.
+   */
+  private persistUsage(): void {
+    const usage = this.thread.usage;
+    if (!isPersistable(usage) || usage === this.persistedUsage) {
+      return;
+    }
+    this.persistedUsage = usage;
+    this.usageMemory.write(usage);
+  }
+
+  /** The reading last written out, so an unchanged one is not rewritten. */
+  private persistedUsage?: Usage;
+
+  /**
+   * The composer queue as the UI sees it.
+   *
+   * Empty is left out rather than sent as an empty list, so the strip can hide
+   * itself without having to count anything.
+   */
+  private queueView(): ChatState["queue"] {
+    if (!this.queuedPrompts.length) {
+      return undefined;
+    }
+    return this.queuedPrompts.map((entry) => ({
+      id: entry.id,
+      preview: promptPreview(entry.prompt),
+      blocks: toUiBlocks(entry.prompt),
+    }));
   }
 
   private async restore(sessionId: string, cwd: string): Promise<void> {
@@ -258,12 +353,16 @@ export class ChatSession implements vscode.Disposable {
     this.sessionTitle = undefined;
     this.sessionId = sessionId;
     this.cwd = cwd;
+    this.seedUsage();
     this.emitTranscript();
 
     try {
       const response = await this.agent.loadSession(sessionId, cwd);
       this.modes = toModes(response.modes);
       this.configOptions = toConfigOptions(response.configOptions);
+      // The loaded session may use a different model/mode/effort than the one
+      // that was active before, so publish the restored config right away.
+      this.touch();
     } catch (error) {
       const agentError = toAgentError(error);
       if (agentError.authRequired) {
@@ -281,6 +380,7 @@ export class ChatSession implements vscode.Disposable {
 
   async restart(): Promise<void> {
     this.cancelAllPending("agent restarted");
+    this.dropQueuedPrompts("The agent restarted before these were sent.");
     this.busy = false;
     const sessionId = this.sessionId;
     await this.agent.restart();
@@ -325,13 +425,24 @@ export class ChatSession implements vscode.Disposable {
   /* ---------------------------------------------------------------- */
 
   async send(text: string, extraBlocks: Block[] = []): Promise<void> {
+    const prompt = toPromptBlocks(text, extraBlocks);
+
     if (this.busy) {
+      // OpenCode is still working, so the prompt waits in the queue above the
+      // composer instead of being dropped or shown as though it were answered.
+      this.queuedPrompts.push({ id: `queued-${++this.queueSeq}`, prompt });
+      this.emitTranscript();
+      this.touch();
       return;
     }
-    const prompt = toPromptBlocks(text, extraBlocks);
+
     this.thread.addUser(toUiBlocks(prompt));
     this.emitTranscript();
+    await this.runPrompt(prompt);
+  }
 
+  /** Runs a single prompt. The user message is assumed to be rendered already. */
+  private async runPrompt(prompt: ContentBlock[]): Promise<void> {
     if (!this.sessionId) {
       try {
         await this.start(vscode.Uri.file(this.cwd ?? process.cwd()));
@@ -360,11 +471,12 @@ export class ChatSession implements vscode.Disposable {
       // credentials or an endpoint that was down — is settled either way.
       this.authRequired = false;
       if (response.usage) {
-        this.thread.usage = {
-          used: response.usage.totalTokens,
-          size: this.thread.usage?.size ?? 0,
-          cost: this.thread.usage?.cost,
-        };
+        // A seeded reading is not evidence about this turn, so only what the
+        // agent actually streamed may suppress the session total.
+        this.thread.usage = mergeUsage(this.thread.liveUsage, {
+          totalTokens: response.usage.totalTokens,
+        });
+        this.persistUsage();
       }
       this.finishTurn();
     } catch (error) {
@@ -380,7 +492,41 @@ export class ChatSession implements vscode.Disposable {
       }
       this.finishTurn();
       log.error("prompt failed: %s", describeError(error));
+      // A failed turn should not silently drain the rest of the queue.
+      this.dropQueuedPrompts("This turn failed before the queue could run.");
+      return;
     }
+
+    // Drain any queued follow-up prompts one at a time.
+    if (this.queuedPrompts.length && !this.busy) {
+      const next = this.queuedPrompts.shift()!;
+      // The message only enters the transcript now, as it starts running, so
+      // it lands after the answer it was a follow-up to.
+      this.thread.addUser(toUiBlocks(next.prompt));
+      this.emitTranscript();
+      this.touch();
+      await this.runPrompt(next.prompt);
+    }
+  }
+
+  /**
+   * Discards everything still waiting.
+   *
+   * The messages never entered the transcript, so they are added now — marked
+   * dropped rather than deleted, because the user did type them and losing the
+   * text would be worse than showing it as unsent.
+   */
+  private dropQueuedPrompts(reason: string): void {
+    const dropped = this.queuedPrompts.splice(0, this.queuedPrompts.length);
+    if (!dropped.length) {
+      return;
+    }
+    for (const entry of dropped) {
+      this.thread.addUser(toUiBlocks(entry.prompt)).status = "dropped";
+    }
+    this.thread.addNotice("warning", "Queued messages discarded", reason);
+    this.emitTranscript();
+    this.touch();
   }
 
   /** Settles everything a completed turn can leave behind. */
@@ -396,6 +542,7 @@ export class ChatSession implements vscode.Disposable {
   }
 
   async cancel(): Promise<void> {
+    this.dropQueuedPrompts("You stopped the turn before these were sent.");
     if (!this.busy || !this.sessionId) {
       return;
     }
@@ -405,6 +552,7 @@ export class ChatSession implements vscode.Disposable {
   }
 
   async newChat(): Promise<void> {
+    this.dropQueuedPrompts("A new conversation was started before these were sent.");
     const cwd = this.cwd ?? this.cwdForSession(undefined);
     this.cancelAllPending("new chat");
     if (this.sessionId) {
@@ -433,6 +581,10 @@ export class ChatSession implements vscode.Disposable {
       return;
     }
     this.cancelAllPending("session switched");
+    // The transcript is about to be wiped, so there would be nowhere to put
+    // these even as unsent messages — and sending them into the conversation
+    // the user just switched to would be worse than losing them.
+    this.queuedPrompts.length = 0;
     await this.restore(sessionId, cwd);
     this.authRequired = false;
     this.touch();
@@ -461,6 +613,12 @@ export class ChatSession implements vscode.Disposable {
     });
     if (response) {
       this.configOptions = toConfigOptions(response.configOptions);
+    }
+    // Only an explicit pick is remembered. The agent also pushes model changes
+    // of its own accord (subagents, retries), and those are not what the user
+    // would want the next new chat to start on.
+    if (configId === "model" && response) {
+      this.modelMemory.write(value);
     }
     this.touch();
   }
@@ -507,6 +665,7 @@ export class ChatSession implements vscode.Disposable {
     // Everything else lands in the transcript. This runs on every streamed
     // chunk, so it only notifies the transcript listener.
     this.thread.apply(update);
+    this.persistUsage();
     this.touchTranscript();
   }
 
@@ -713,6 +872,30 @@ export class ChatSession implements vscode.Disposable {
 /* ------------------------------------------------------------------ */
 /* Conversion helpers                                                   */
 /* ------------------------------------------------------------------ */
+
+/**
+ * A one-line stand-in for a queued prompt.
+ *
+ * The queue strip is a list, not a transcript, so the message is flattened to
+ * its first line — anything the composer held rather than typed (an image, an
+ * attached file) still has to show as something, or the row reads as blank.
+ */
+function promptPreview(blocks: ContentBlock[]): string {
+  const text = blocks
+    .map((block) => {
+      if (block.type === "text") {
+        return block.text;
+      }
+      if (block.type === "resource_link") {
+        return block.name;
+      }
+      return "[image]";
+    })
+    .join(" ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return text || "[attachment]";
+}
 
 function toUiBlocks(blocks: ContentBlock[]): Block[] {
   const result: Block[] = [];

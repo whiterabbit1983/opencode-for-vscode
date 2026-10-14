@@ -1,6 +1,7 @@
 import { diffLines, type DiffRow } from "./diff.js";
 import { escapeHtml, renderMarkdown } from "./markdown.js";
 import { modelLabel, modelName } from "../src/shared/model-name.js";
+import { compactNumber, contextRatio, formatPercent, meterLevel } from "../src/shared/usage.js";
 import type {
   Block,
   ChatItem,
@@ -8,6 +9,7 @@ import type {
   ConfigOptionView,
   FormField,
   HostMessage,
+  PermissionOption,
   PermissionRequest,
   Question,
   SessionSummary,
@@ -224,6 +226,7 @@ function buildShell(): void {
     <div class="statusbar"></div>
     <div class="composer">
       <div class="picker" hidden></div>
+      <div class="queue" hidden></div>
       <div class="composer-inner">
         <textarea rows="3" placeholder="Describe what to build…" spellcheck="true" title="Enter to send · Shift+Enter for a new line"></textarea>
         <div class="composer-toolbar">
@@ -258,6 +261,7 @@ function buildShell(): void {
     composer: ".composer",
     textarea: ".composer textarea",
     picker: ".picker",
+    queue: ".queue",
     menu: ".menu",
     modeChip: '[data-menu="mode"]',
     modelChip: '[data-menu="model"]',
@@ -306,6 +310,7 @@ function wireEvents(): void {
 
   root.addEventListener("click", (event) => onClick(event));
   root.addEventListener("submit", (event) => event.preventDefault());
+  root.addEventListener("keydown", (event) => onPromptKey(event));
 
   document.addEventListener("click", (event) => {
     if (state.menu === "none") {
@@ -341,7 +346,12 @@ function onClick(event: MouseEvent): void {
       case "send":
       case "stop":
         if (state.chat.busy) {
-          post({ type: "cancel" });
+          const queued = (dom.textarea as HTMLTextAreaElement).value.trim();
+          if (queued) {
+            submit(queued);
+          } else {
+            post({ type: "cancel" });
+          }
         } else {
           submit((dom.textarea as HTMLTextAreaElement).value);
         }
@@ -506,9 +516,20 @@ function submit(text: string): void {
     return;
   }
   if (state.chat.busy) {
-    // The draft is kept so nothing is lost; the user can send it the moment
-    // the current turn finishes.
-    flashStatus("Still working — your message will send when OpenCode stops.");
+    if (state.chat.connection === "error") {
+      flashStatus("OpenCode isn't connected. Restart the agent from the toolbar.");
+      return;
+    }
+    state.draft = "";
+    const toolbarTextarea = dom.textarea as HTMLTextAreaElement;
+    toolbarTextarea.value = "";
+    closePicker();
+    autosize(toolbarTextarea);
+    post({ type: "send", text: value });
+    scrollToEnd(true);
+    // The queue in state is still the pre-send one: the extension has not answered
+// yet, so the row this send just added is counted here rather than read back.
+flashStatus(`Queued (${(state.chat.queue?.length ?? 0) + 1}) — runs when OpenCode finishes.`);
     return;
   }
   if (state.chat.connection === "error") {
@@ -950,6 +971,7 @@ function renderAll(): void {
   renderBanner();
   renderPlan();
   renderTranscript();
+  renderQueue();
   renderStatusBar();
   renderComposer();
   renderMenu();
@@ -1067,6 +1089,97 @@ function transcriptUnits(): TranscriptUnit[] {
   return state.chat.items.length ? [] : [welcomeUnit()];
 }
 
+/**
+ * Keyboard handling for a focused permission prompt.
+ *
+ * The agent is blocked until this is answered, so the prompt takes focus when
+ * it arrives and owns the keyboard while it holds it: Enter approves once,
+ * Escape declines, and the arrow keys walk the options. Scoping this to the
+ * focused prompt is what keeps it from swallowing keystrokes destined for the
+ * composer — the composer's own Enter handler is on a different element.
+ */
+function onPromptKey(event: KeyboardEvent): void {
+  const prompt = (event.target as HTMLElement | null)?.closest<HTMLElement>(".prompt[data-prompt]");
+  if (!prompt || event.defaultPrevented) {
+    return;
+  }
+
+  const buttons = Array.from(prompt.querySelectorAll<HTMLButtonElement>(".prompt-actions .btn"));
+  const pick = (selector: string) => prompt.querySelector<HTMLButtonElement>(selector);
+
+  switch (event.key) {
+    case "Enter": {
+      const target = pick(".btn.allow") ?? buttons[0];
+      if (!target) {
+        return;
+      }
+      event.preventDefault();
+      target.click();
+      return;
+    }
+    case "Escape": {
+      // Declining is always available and is the safe way out of a prompt the
+      // user did not want in the first place.
+      const target = pick(".btn.deny") ?? buttons[buttons.length - 1];
+      if (target) {
+        event.preventDefault();
+        target.click();
+      } else {
+        post({ type: "respondPermission", requestId: prompt.dataset.request ?? "", outcome: "cancelled" });
+      }
+      return;
+    }
+    case "ArrowLeft":
+    case "ArrowRight": {
+      if (!buttons.length) {
+        return;
+      }
+      event.preventDefault();
+      const step = event.key === "ArrowRight" ? 1 : -1;
+      const current = buttons.findIndex((button) => button === document.activeElement);
+      const next = buttons[(Math.max(current, 0) + step + buttons.length) % buttons.length];
+      next.focus();
+      return;
+    }
+    default:
+      return;
+  }
+}
+
+/**
+ * Brings a newly arrived prompt on screen and puts the keyboard on it.
+ *
+ * The transcript only auto-scrolls when the reader is already at the bottom,
+ * which leaves a prompt to arrive silently off-screen while the agent waits —
+ * the single most confusing way this dialog can behave. Focus is skipped when
+ * the user is part-way through typing, because yanking the caret mid-sentence
+ * to ask about a command is worse than making them click.
+ */
+let lastPromptRequest: string | undefined;
+
+function focusNewPrompt(): void {
+  const prompts = dom.transcript?.querySelectorAll<HTMLElement>(".prompt[data-prompt]");
+  // The newest prompt is the one the agent is waiting on; anything before it
+  // is history.
+  const prompt = prompts?.[prompts.length - 1];
+  if (!prompt) {
+    lastPromptRequest = undefined;
+    return;
+  }
+  const request = prompt.dataset.request ?? "";
+  if (request === lastPromptRequest) {
+    return;
+  }
+  lastPromptRequest = request;
+  prompt.scrollIntoView({ block: "nearest", behavior: "smooth" });
+
+  const typing =
+    document.activeElement === dom.textarea && Boolean((dom.textarea as HTMLTextAreaElement | null)?.value.trim());
+  if (!typing) {
+    prompt.focus({ preventScroll: true });
+  }
+}
+
 function renderTranscript(): void {
   const transcript = dom.transcript;
   const wasAtBottom = isAtBottom(transcript);
@@ -1117,6 +1230,7 @@ function renderTranscript(): void {
   if (wasAtBottom) {
     scrollToEnd(false);
   }
+  focusNewPrompt();
 }
 
 function rerenderItem(itemElement: HTMLElement): void {
@@ -1223,7 +1337,9 @@ function itemSignature(item: ChatItem): string {
     case "tool":
       return toolSignature(item.call);
     case "user":
-      return JSON.stringify([item.kind, item.blocks]);
+      // `status` is part of the signature or a message the queue threw away
+      // keeps its badge forever.
+      return JSON.stringify([item.kind, item.blocks, item.status]);
     case "permission":
       return JSON.stringify([item.request, item.resolved]);
     case "question":
@@ -1249,7 +1365,7 @@ function toolSignature(call: ToolCall): string {
 function itemHtml(item: ChatItem): string {
   switch (item.kind) {
     case "user":
-      return `<div class="bubble-user">${renderBlocks(item.blocks)}</div>`;
+      return userHtml(item);
     case "agent":
       return `${renderBlocks(item.blocks)}${isWriting(item) ? typingDots() : ""}`;
     case "thought":
@@ -1269,6 +1385,46 @@ function itemHtml(item: ChatItem): string {
     default:
       return "";
   }
+}
+
+/**
+ * A user message the agent is working on, or one the queue threw away.
+ *
+ * A message waiting its turn is not here at all — it sits in the queue above
+ * the composer until it actually starts, so a transcript bubble always means
+ * the agent has it.
+ */
+function userHtml(item: Extract<ChatItem, { kind: "user" }>): string {
+  const badge =
+    item.status === "dropped"
+      ? `<span class="bubble-flag dropped"><span class="codicon codicon-circle-slash"></span>Not sent</span>`
+      : "";
+  return `<div class="bubble-user${item.status ? ` is-${item.status}` : ""}">
+    ${renderBlocks(item.blocks)}${badge}
+  </div>`;
+}
+
+/**
+ * The waiting queue, stacked directly above the composer.
+ *
+ * Shown in send order with a position number, because the last row is the one
+ * that runs next — the list is a schedule, not a log.
+ */
+function renderQueue(): void {
+  const queue = dom.queue;
+  if (!queue) {
+    return;
+  }
+  const entries = state.chat.queue ?? [];
+  queue.hidden = entries.length === 0;
+  queue.innerHTML = entries
+    .map(
+      (entry, index) => `<div class="queue-row">
+        <span class="queue-pos" aria-hidden="true">${index + 1}</span>
+        <span class="queue-text" title="${escapeHtml(entry.preview)}">${escapeHtml(entry.preview)}</span>
+      </div>`,
+    )
+    .join("");
 }
 
 /**
@@ -1493,27 +1649,65 @@ function permissionHtml(
     newText: string;
   }>;
 
-  const buttons = request.options
-    .map((option) => {
-      const primary = option.kind === "allow_once" || option.kind === "reject_once";
-      const danger = option.kind.startsWith("reject");
-      const cls = danger ? "btn ghost" : primary ? "btn primary" : "btn";
-      return `<button class="${cls}" data-action="permission" data-id="${escapeHtml(
-        request.requestId,
-      )}" data-option="${escapeHtml(option.optionId)}">${escapeHtml(option.name)}</button>`;
-    })
-    .join("");
+  // The agent names its own options ("Allow once", "Always allow", …), but the
+  // risk they carry differs a lot: a single approval is routine, a persistent
+  // grant is not, and rejecting once is the safest way to say no. Styling all
+  // four the same made the dialog unreadable, so each option is mapped to a
+  // role the stylesheet can weight differently.
+  const allows = request.options.filter((option) => !option.kind.startsWith("reject"));
+  const denies = request.options.filter((option) => option.kind.startsWith("reject"));
 
-  return `<div class="prompt">
+  const optionButton = (option: PermissionOption) => {
+    const allow = !option.kind.startsWith("reject");
+    // Only a one-off approval gets the solid "just do it" treatment; the
+    // persistent variants stay outlined so a stray click cannot quietly widen
+    // the agent's permissions for the rest of the session.
+    const variant = allow
+      ? option.kind === "allow_always"
+        ? "allow-persist"
+        : "allow"
+      : option.kind === "reject_always"
+        ? "deny-persist"
+        : "deny";
+    return `<button class="btn ${variant}" data-action="permission" data-id="${escapeHtml(
+      request.requestId,
+    )}" data-option="${escapeHtml(option.optionId)}">${escapeHtml(option.name)}</button>`;
+  };
+
+  // The single safest approval, which is what Enter and the initial focus pick.
+  const enterOption = allows.find((option) => option.kind === "allow_once") ?? allows[0];
+  const escapeOption = denies.find((option) => option.kind === "reject_once") ?? denies[0];
+
+  return `<div class="prompt${request.warning ? " has-warning" : ""}" data-prompt data-request="${escapeHtml(
+    request.requestId,
+  )}" tabindex="-1" role="group" aria-label="${escapeHtml(request.title)}">
     <div class="prompt-head">
       <span class="codicon codicon-shield"></span>
-      <span>${escapeHtml(request.title)}</span>
+      <span class="prompt-title">${escapeHtml(request.title)}</span>
+      <span class="prompt-state">Waiting for you</span>
     </div>
     <div class="prompt-body">
       ${request.warning ? `<div class="prompt-warning"><span class="codicon codicon-warning"></span><span>${escapeHtml(request.warning)}</span></div>` : ""}
       ${command ? `<div class="prompt-command">${escapeHtml(clipText(command.text, 20).trim())}</div>` : ""}
       ${diffs.map(diffHtml).join("")}
-      <div class="prompt-actions">${buttons}</div>
+      <div class="prompt-actions">
+        <div class="prompt-group">
+          ${allows.map(optionButton).join("")}
+        </div>
+        ${
+          denies.length
+            ? `<div class="prompt-divider" role="separator"></div><div class="prompt-group">${denies.map(optionButton).join("")}</div>`
+            : ""
+        }
+      </div>
+      <div class="prompt-hint">
+        ${
+          enterOption
+            ? `<span><kbd>Enter</kbd> ${escapeHtml(enterOption.name)}</span>`
+            : `<span><kbd>Enter</kbd> confirm</span>`
+        }
+        ${escapeOption ? `<span><kbd>Esc</kbd> ${escapeHtml(escapeOption.name)}</span>` : ""}
+      </div>
     </div>
   </div>`;
 }
@@ -1533,17 +1727,33 @@ function questionHtml(
 
   const answers = state.questionDrafts[question.requestId] ?? {};
   const fields = question.fields.map((field) => fieldHtml(field, question.requestId, answers)).join("");
-  return `<div class="prompt">
+  return `<div class="prompt${question.fields.some((field) => field.required) ? " has-warning" : ""}" data-prompt data-question data-request="${escapeHtml(
+    question.requestId,
+  )}" tabindex="-1" role="group" aria-label="${escapeHtml(question.message)}">
     <div class="prompt-head">
       <span class="codicon codicon-question"></span>
-      <span>${escapeHtml(question.message)}</span>
+      <span class="prompt-title">${escapeHtml(question.message)}</span>
+      <span class="prompt-state">Waiting for you</span>
     </div>
     <div class="prompt-body">
       ${fields}
       <div class="prompt-actions">
-        <button class="btn primary" data-action="question-accept" data-id="${escapeHtml(question.requestId)}">Submit</button>
-        <button class="btn ghost" data-action="question-decline" data-id="${escapeHtml(question.requestId)}">Skip</button>
-        <button class="btn ghost" data-action="question-cancel" data-id="${escapeHtml(question.requestId)}">Cancel</button>
+        <div class="prompt-group">
+          <button class="btn allow" data-action="question-accept" data-id="${escapeHtml(
+            question.requestId,
+          )}">Submit</button>
+        </div>
+        <div class="prompt-divider" role="separator"></div>
+        <div class="prompt-group">
+          <button class="btn" data-action="question-decline" data-id="${escapeHtml(question.requestId)}">Skip</button>
+          <button class="btn deny" data-action="question-cancel" data-id="${escapeHtml(
+            question.requestId,
+          )}">Cancel</button>
+        </div>
+      </div>
+      <div class="prompt-hint">
+        <span><kbd>Enter</kbd> Submit</span>
+        <span><kbd>Esc</kbd> Cancel</span>
       </div>
     </div>
   </div>`;
@@ -1667,27 +1877,37 @@ function welcomeHtml(): string {
 /* ------------------------------------------------------------------ */
 
 function renderStatusBar(): void {
-  const { usage, retry, busy, cwd } = state.chat;
+  const { usage, retry, busy, connection } = state.chat;
   const parts: string[] = [];
 
   if (retry) {
     parts.push(
-      `<span class="retry"><span class="codicon codicon-loading codicon-modifier-spin"></span> Retrying (${escapeHtml(
-        retry.error.message,
-      )})</span>`,
+      `<span class="usage retry"><span class="spinner"></span>Retrying (${escapeHtml(retry.error.message)})</span>`,
     );
+  } else if (busy) {
+    // A static "Working…" cannot tell a live turn from a stalled one. The
+    // spinner keeps moving for as long as the agent is actually working.
+    parts.push(`<span class="usage working"><span class="spinner"></span>Working…</span>`);
   }
 
-  if (usage && usage.size > 0) {
-    const ratio = Math.min(1, usage.used / usage.size);
-    const level = ratio > 0.8 ? "high" : "";
-    parts.push(
-      `<span class="usage" title="${usage.used} of ${usage.size} tokens">${compactNumber(usage.used)} tokens
-        <span class="context-meter ${level}"><span style="width:${Math.round(ratio * 100)}%"></span></span>
-      </span>`,
-    );
+  if (usage) {
+    const ratio = contextRatio(usage);
+    const meter =
+      ratio === undefined
+        ? `<span class="usage" title="${usage.used} tokens used this session">${compactNumber(usage.used)} tokens</span>`
+        : `<span class="usage context" title="${usage.used} of ${usage.size} context tokens used (${formatPercent(ratio)})">
+            <span class="usage-figure">${compactNumber(usage.used)}</span>
+            <span class="usage-of">/ ${compactNumber(usage.size)}</span>
+            <span class="context-meter ${meterLevel(ratio)}"><span style="width:${Math.round(ratio * 100)}%"></span></span>
+            <span class="usage-pct">${formatPercent(ratio)}</span>
+          </span>`;
+    parts.push(meter);
     if (usage.cost) {
-      parts.push(`<span class="usage">$${usage.cost.amount.toFixed(3)}</span>`);
+      parts.push(
+        `<span class="usage cost" title="Session cost">${
+          usage.cost.currency === "USD" ? "$" : `${usage.cost.currency} `
+        }${usage.cost.amount.toFixed(3)}</span>`,
+      );
     }
   }
 
@@ -1695,12 +1915,12 @@ function renderStatusBar(): void {
     parts.push(`<span class="usage">Waiting for sign-in…</span>`);
   }
 
+  // The folder name used to sit here. It was the only thing between the
+  // counters and the composer, it repeated what the window title already says,
+  // and it pushed the context meter off the left edge on narrow panels.
   parts.push(`<span class="spacer"></span>`);
-  if (cwd) {
-    parts.push(`<span class="usage" title="${escapeHtml(cwd)}">${escapeHtml(basename(cwd))}</span>`);
-  }
-  if (busy) {
-    parts.push(`<span class="usage">Working…</span>`);
+  if (connection === "starting") {
+    parts.push(`<span class="usage working"><span class="spinner"></span>Starting OpenCode…</span>`);
   }
 
   dom.statusbar.innerHTML = parts.join("");
@@ -1806,16 +2026,6 @@ function basename(path: string): string {
 function shortPath(path: string): string {
   const parts = path.split(/[\\/]/).filter(Boolean);
   return parts.length > 2 ? `…/${parts.slice(-2).join("/")}` : path;
-}
-
-function compactNumber(value: number): string {
-  if (value < 1000) {
-    return String(value);
-  }
-  if (value < 1_000_000) {
-    return `${(value / 1000).toFixed(value < 10_000 ? 1 : 0)}k`;
-  }
-  return `${(value / 1_000_000).toFixed(1)}M`;
 }
 
 function toggleSet(set: Set<string>, value: string): void {

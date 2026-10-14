@@ -5,6 +5,8 @@
  * or Node imports.
  */
 
+import type { Usage } from "./usage.js";
+
 export type Block =
   | { type: "text"; text: string }
   | { type: "image"; mimeType: string; data: string }
@@ -35,13 +37,24 @@ export interface PlanEntry {
   status: "pending" | "in_progress" | "completed";
 }
 
+export interface PermissionOption {
+  optionId: string;
+  name: string;
+  /**
+   * ACP option kind: `allow_once`, `allow_always`, `reject_once`,
+   * `reject_always`, or a custom string. Callers must treat anything that is
+   * not a known `reject*` kind as an approval.
+   */
+  kind: string;
+}
+
 export interface PermissionRequest {
   requestId: string;
   toolCallId?: string;
   title: string;
   kind?: string;
   name?: string;
-  options: Array<{ optionId: string; name: string; kind: string }>;
+  options: PermissionOption[];
   /** Rendered content of the tool call, shown above the buttons. */
   content: ToolCallContent[];
   /** Extra warning shown for destructive commands when the user asked for it. */
@@ -101,8 +114,10 @@ export interface ChatState {
   configOptions?: ConfigOptionView[];
   commands?: Array<{ name: string; description: string }>;
   model?: { id: string; name: string };
-  usage?: { used: number; size: number; cost?: { amount: number; currency: string } };
+  usage?: Usage;
   retry?: { attempt: number; nextRetryAt: string; error: { type: string; message: string } };
+  /** Prompts waiting behind a running turn, shown above the composer. */
+  queue?: QueuedMessage[];
   fonts: { size: number };
   options: {
     showThoughts: boolean;
@@ -116,8 +131,34 @@ export interface ChatState {
   authInProgress?: boolean;
 }
 
+/**
+ * A message waiting behind a running turn.
+ *
+ * It is deliberately not a `ChatItem`: a queued message has not been sent, so
+ * putting it in the transcript would claim the agent had already seen it. It
+ * joins the transcript at the moment it starts running.
+ */
+export interface QueuedMessage {
+  id: string;
+  /** Single-line stand-in — the queue strip is a list, not a transcript. */
+  preview: string;
+  blocks: Block[];
+}
+
+export interface UserItem {
+  kind: "user";
+  id: string;
+  blocks: Block[];
+  /**
+   * `dropped` once the queue is discarded before the message ever reached the
+   * agent. It stays in the transcript so nothing the user typed is silently
+   * lost. Absent means the agent is working on it, or already has.
+   */
+  status?: "dropped";
+}
+
 export type ChatItem =
-  | { kind: "user"; id: string; blocks: Block[] }
+  | UserItem
   | { kind: "agent"; id: string; blocks: Block[]; streaming?: boolean }
   | { kind: "thought"; id: string; blocks: Block[]; streaming?: boolean }
   | { kind: "tool"; id: string; call: ToolCall }

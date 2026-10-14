@@ -251,7 +251,7 @@
         },
         "opencode.reuseLastSession": {
           "type": "boolean",
-          "default": true,
+          "default": false,
           "markdownDescription": "Reopen the previous chat automatically when VS Code starts. The agent replays the transcript from its own session store, so nothing is lost."
         }
       }

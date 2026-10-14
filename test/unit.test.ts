@@ -7,7 +7,9 @@ import { chooseAutomatically, destructiveReason, sliceLines, toFormFields } from
 import { diffLines } from "../webview/diff.js";
 import { escapeHtml, highlight, renderMarkdown, sanitizeUrl } from "../webview/markdown.js";
 import { modelLabel, modelName } from "../src/shared/model-name.js";
-import type { Block, ChatItem, PermissionRequest } from "../src/shared/protocol.js";
+import { modelToRestore } from "../src/session/model-memory.js";
+import { compactNumber, contextRatio, formatPercent, isPersistable, isUsage, mergeUsage, meterLevel } from "../src/shared/usage.js";
+import type { Block, ChatItem, ConfigOptionView, PermissionRequest } from "../src/shared/protocol.js";
 
 /* ------------------------------------------------------------------ */
 /* Transcript reducer                                                   */
@@ -185,6 +187,39 @@ test("reset clears everything", () => {
   assert.equal(thread.plan, undefined);
 });
 
+test("a user message starts with no status", () => {
+  const thread = new Thread();
+  const item = thread.addUser([text("hi")]);
+  assert.equal(item.status, undefined);
+});
+
+test("a message the queue threw away stays marked in the snapshot", () => {
+  const thread = new Thread();
+  const item = thread.addUser([text("later")]);
+  item.status = "dropped";
+
+  const [snapshot] = thread.snapshot();
+  assert.equal(snapshot.kind === "user" ? snapshot.status : "?", "dropped");
+
+  // The badge is driven off this field, so the mutation has to be visible in
+  // the snapshot the webview renders from.
+  item.status = undefined;
+  const [after] = thread.snapshot();
+  assert.equal(after.kind === "user" ? after.status : "?", undefined);
+});
+
+test("a plain user message carries no status at all", () => {
+  const thread = new Thread();
+  thread.addUser([text("now")]);
+  // Nothing is "queued" in the transcript any more: a waiting message lives in
+  // the composer queue and only joins the transcript once it is being sent, so
+  // an absent status has to mean exactly that.
+  assert.deepEqual(
+    thread.snapshot().map((item) => (item.kind === "user" ? item.status : "?")),
+    [undefined],
+  );
+});
+
 test("images and resource links convert to display blocks", () => {
   assert.deepEqual(toBlock({ type: "image", data: "AAA", mimeType: "image/png" }), {
     type: "image",
@@ -295,6 +330,132 @@ test("an id with no provider or label still produces a name", () => {
     name: "Gpt Oss 20b",
     provider: "opencode",
   });
+});
+
+/* ------------------------------------------------------------------ */
+/* Context usage                                                        */
+/* ------------------------------------------------------------------ */
+
+test("the end-of-turn total does not clobber the context reading", () => {
+  // This is the bug the TUI gets right: `usage_update` is tokens-in-context,
+  // while the prompt response is a cumulative session total. Folding the
+  // second over the first pins the meter at 100% within a few turns.
+  const streamed = { used: 12_000, size: 200_000, cost: { amount: 0.4, currency: "USD" } };
+  const merged = mergeUsage(streamed, { totalTokens: 900_000 });
+  assert.deepEqual(merged, streamed);
+  assert.equal(contextRatio(merged), 0.06);
+});
+
+test("with no context reading the session total stands alone", () => {
+  const merged = mergeUsage(undefined, { totalTokens: 5_400 });
+  assert.deepEqual(merged, { used: 5_400, size: 0 });
+  // A size of zero means "unknown window", so no meter is drawn.
+  assert.equal(contextRatio(merged), undefined);
+});
+
+test("the context meter clamps rather than overflowing", () => {
+  assert.equal(contextRatio({ used: 250_000, size: 200_000 }), 1);
+  assert.equal(contextRatio({ used: -1, size: 200_000 }), 0);
+});
+
+test("the meter escalates as compaction gets close", () => {
+  assert.equal(meterLevel(0.4), "");
+  assert.equal(meterLevel(0.85), "high");
+  assert.equal(meterLevel(0.96), "critical");
+});
+
+test("percentages keep a decimal while the context is still small", () => {
+  assert.equal(formatPercent(0.1234), "12%");
+  assert.equal(formatPercent(0.041), "4.1%");
+  assert.equal(formatPercent(0), "0%");
+});
+
+test("token counts compact the way the TUI writes them", () => {
+  assert.equal(compactNumber(940), "940");
+  assert.equal(compactNumber(1_540), "1.5k");
+  assert.equal(compactNumber(15_400), "15k");
+  assert.equal(compactNumber(1_250_000), "1.3M");
+});
+
+test("only a reading with a known window is worth carrying over", () => {
+  assert.equal(isPersistable({ used: 48_000, size: 200_000 }), true);
+  // A bare session total has no window behind it, so persisting it would
+  // replace a real meter with a weaker figure on the next chat.
+  assert.equal(isPersistable({ used: 48_000, size: 0 }), false);
+  assert.equal(isPersistable(undefined), false);
+});
+
+test("a stored reading is checked before it reaches the meter", () => {
+  // `globalState` is JSON, so anything can come back out of it.
+  assert.equal(isUsage({ used: 48_000, size: 200_000 }), true);
+  assert.equal(isUsage({ used: 48_000, size: 200_000, cost: { amount: 0.08, currency: "USD" } }), true);
+  assert.equal(isUsage({ used: "48000", size: 200_000 }), false);
+  assert.equal(isUsage({ used: 48_000 }), false);
+  assert.equal(isUsage({ used: 48_000, size: 200_000, cost: { amount: 0.08 } }), false);
+  assert.equal(isUsage(null), false);
+  assert.equal(isUsage(undefined), false);
+  assert.equal(isUsage("200k"), false);
+});
+
+/* ------------------------------------------------------------------ */
+/* Remembered model                                                     */
+/* ------------------------------------------------------------------ */
+
+/** The shape `opencode acp` returns for its `model` config option. */
+const modelOption = (current: string, values: string[]): ConfigOptionView[] => [
+  {
+    id: "model",
+    name: "Model",
+    type: "select",
+    category: "model",
+    current,
+    options: values.map((value) => ({ value, label: value })),
+  },
+];
+
+const CAT_JAM = "opencode/cat-jam-free";
+const SPACE_BUNNY = "opencode/space-bunny-free";
+
+test("a fresh session is moved off the server default onto the remembered model", () => {
+  // `opencode acp` always opens on its own default, so without this the chip
+  // would read Cat Jam Free forever no matter what the user picked.
+  const options = modelOption(CAT_JAM, [CAT_JAM, SPACE_BUNNY]);
+  assert.deepEqual(modelToRestore(options, SPACE_BUNNY), { configId: "model", value: SPACE_BUNNY });
+});
+
+test("a session already on the remembered model is left alone", () => {
+  const options = modelOption(SPACE_BUNNY, [CAT_JAM, SPACE_BUNNY]);
+  assert.equal(modelToRestore(options, SPACE_BUNNY), undefined);
+});
+
+test("a remembered model the session no longer offers is skipped", () => {
+  // Uninstalling a provider must not leave the chat pinned to a model the
+  // agent will reject.
+  const options = modelOption(CAT_JAM, [CAT_JAM]);
+  assert.equal(modelToRestore(options, SPACE_BUNNY), undefined);
+});
+
+test("nothing is restored before the user has chosen a model", () => {
+  const options = modelOption(CAT_JAM, [CAT_JAM, SPACE_BUNNY]);
+  assert.equal(modelToRestore(options, undefined), undefined);
+});
+
+test("a session that reports no model option is left alone", () => {
+  assert.equal(modelToRestore([], SPACE_BUNNY), undefined);
+});
+
+test("the model option is found by category as well as by id", () => {
+  const options: ConfigOptionView[] = [
+    {
+      id: "reasoning",
+      name: "Reasoning",
+      type: "select",
+      category: "model",
+      current: CAT_JAM,
+      options: [{ value: SPACE_BUNNY, label: SPACE_BUNNY }],
+    },
+  ];
+  assert.deepEqual(modelToRestore(options, SPACE_BUNNY), { configId: "reasoning", value: SPACE_BUNNY });
 });
 
 /* ------------------------------------------------------------------ */

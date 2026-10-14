@@ -29,7 +29,7 @@ export function readSettings(): OpenCodeSettings {
     fontSize: config.get<number>("fontSize") ?? 0,
     maxToolOutputLines: config.get<number>("maxToolOutputLines") ?? 40,
     confirmDestructiveCommands: config.get<boolean>("confirmDestructiveCommands") ?? true,
-    reuseLastSession: config.get<boolean>("reuseLastSession") ?? true,
+    reuseLastSession: config.get<boolean>("reuseLastSession") ?? false,
   };
 }
 

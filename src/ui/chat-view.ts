@@ -333,7 +333,10 @@ export class ChatViewHost implements vscode.WebviewViewProvider {
 
   private async doStart(): Promise<void> {
     try {
-      const restore = this.session.snapshot().session?.sessionId ?? this.options.lastSessionId?.();
+      // A freshly opened extension window always starts a new conversation;
+      // charts can still be resumed explicitly from history.
+      void this.options.lastSessionId;
+      const restore = undefined;
       await this.session.start(vscode.workspace.workspaceFolders?.[0]?.uri, restore);
       this.started = true;
     } catch (error) {
