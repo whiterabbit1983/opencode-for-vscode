@@ -21,6 +21,11 @@ All notable changes to this extension are documented here. The format follows
   under its labels, the machine's are appended without repeats, and the model
   the session says it is on keeps the tick. The picker says when the host
   contributed to what is on screen.
+- An agent that dies while introducing itself now reports why, instead of
+  `write EPIPE`. Writing to a child that has already exited raises `EPIPE` rather
+  than a close, and on some Node versions that beat the exit event — so the exit
+  code and the agent's last line of stderr, which were already in hand, were
+  thrown away in favour of the transport's word for it.
 
 ## [0.2.1] - 2026-10-14
 

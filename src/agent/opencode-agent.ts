@@ -118,6 +118,17 @@ const LOGIN_SHELL_TIMEOUT_MS = 5_000;
 const DEATH_GRACE_MS = 1_000;
 
 /**
+ * The wording the transport uses when the agent's end of the pipe is gone.
+ *
+ * A close is the usual sign, but writing to a child that has already died gives
+ * `EPIPE`, and a stream torn down underneath a write gives `ERR_STREAM_DESTROYED`
+ * or a premature close. All three are the same event — the agent is not there any
+ * more — and all three should lead to its exit reason rather than to the
+ * transport's word for it.
+ */
+const TRANSPORT_GONE = /closed|epipe|destroyed|premature/i;
+
+/**
  * Resolves with `undefined` after `ms`, for giving up on something without
  * rejecting because it did not happen.
  */
@@ -365,11 +376,17 @@ export class OpenCodeAgent {
    * that the connection closed. They are the same event seen from two sides, and
    * the transport loses the information — it can only say "closed". So the death
    * is waited out before the transport's word becomes the error the user sees.
+   *
+   * A dead child's `stdin` reports the loss as `EPIPE` rather than as a close,
+   * and on some Node versions it wins the race against the `exit` event, so it
+   * counts as the same thing here. Left out, an agent that dies mid-handshake
+   * reports `write EPIPE` instead of the exit code and last line of stderr that
+   * actually explain it — and that reason is already in hand by then.
    */
   private async reasonForStartupFailure(error: unknown, died: Promise<AgentError>): Promise<unknown> {
-    // Anything other than a closed connection is the agent's own answer and is
-    // more specific than a process exit would be.
-    if (!/closed/i.test(describeError(error))) {
+    // Anything other than the transport saying it is gone is the agent's own
+    // answer and is more specific than a process exit would be.
+    if (!TRANSPORT_GONE.test(describeError(error))) {
       return error;
     }
     const reason = await Promise.race([died, settleAfter(DEATH_GRACE_MS)]);
