@@ -71,6 +71,15 @@ if (!process.argv.includes("--production")) {
       // test uses rather than a missing `vscode` at require time.
       alias: { vscode: "./test/vscode-stub.ts" },
     },
+    {
+      ...common,
+      entryPoints: ["test/host-info.test.ts"],
+      outfile: "dist/test/host-info.test.js",
+      platform: "node",
+      format: "cjs",
+      // Drives `ChatSession` and the settings reader, so it needs the stub too.
+      alias: { vscode: "./test/vscode-stub.ts" },
+    },
   );
 }
 

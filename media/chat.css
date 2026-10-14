@@ -1413,10 +1413,105 @@ a:hover {
   letter-spacing: 0.6px;
   color: var(--oc-muted);
 }
+
+/* A model picker section: the provider it serves, or the recents before it. */
+.menu-group-label {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 6px 8px 3px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--oc-muted);
+  /* Pinned to the top of the scrolled list, so a provider's rows stay under
+     their heading however far the list is scrolled. */
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--vscode-menu-background, var(--vscode-dropdown-background));
+}
+.menu-group-note {
+  font-size: 9.5px;
+  letter-spacing: 0;
+  text-transform: none;
+  opacity: 0.8;
+}
+
+/* The filter sits above the scrolled list rather than inside it, so it stays
+   put and a long catalog can be searched without losing your place. */
+.menu-filter {
+  display: block;
+  width: 100%;
+  margin: 2px 0 4px;
+  padding: 4px 7px;
+  border: 1px solid var(--vscode-input-border, var(--oc-border));
+  border-radius: 4px;
+  background: var(--vscode-input-background, transparent);
+  color: var(--vscode-input-foreground, inherit);
+  font-family: inherit;
+  font-size: 12px;
+  outline: none;
+}
+.menu-filter:focus {
+  border-color: var(--vscode-focusBorder, #0078d4);
+}
+.menu-filter::placeholder {
+  color: var(--oc-muted);
+}
+.menu-filter-count {
+  padding: 0 8px 2px;
+  font-size: 10px;
+  color: var(--oc-muted);
+  text-align: right;
+}
+
+/* The model picker is taller than the other menus and scrolls its *list*, not
+   itself, so the filter and the count stay put while a long catalog is walked.
+   The others are short enough that scrolling the whole menu is fine. */
+.menu-model {
+  display: flex;
+  flex-direction: column;
+  max-height: 420px;
+  overflow: hidden;
+}
+.menu-model .menu-body {
+  /* `min-height: 0` is what lets a flex child shrink and scroll rather than
+     pushing the menu past its max-height. */
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.menu-item.active {
+  background: var(--vscode-menu-selectionBackground, var(--oc-hover));
+  color: var(--vscode-menu-selectionForeground, inherit);
+}
 .menu-sep {
   height: 1px;
   margin: 4px 0;
   background: var(--oc-border);
+}
+
+/* A read-only block in a menu: where the settings on screen came from. */
+.menu-note {
+  padding: 4px 8px 6px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--oc-muted);
+  white-space: normal;
+}
+.menu-note strong {
+  display: block;
+  font-weight: 500;
+  color: var(--vscode-foreground);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.menu-note code {
+  font-family: var(--vscode-mono);
+  font-size: 10.5px;
 }
 
 /* ------------------------------------------------------------------ */

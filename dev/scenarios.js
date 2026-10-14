@@ -80,8 +80,132 @@ scenarios = {
     items: [],
   },
 
+  // A window attached over Remote-SSH: the agent, its settings and its models
+  // all come from the box on the other end, and the chat has to say so.
+  "remote-host": {
+    ...base,
+    cwd: "/srv/acme-api",
+    host: {
+      host: "build-box",
+      remoteName: "ssh-remote",
+      binary: "/home/dev/.opencode/bin/opencode",
+      version: "2.0.27",
+      configDir: "/home/dev/.config/opencode",
+      stateDir: "/home/dev/.local/state/opencode",
+      sources: [
+        { type: "directory", path: "/home/dev/.config/opencode" },
+        { type: "document", path: "/srv/acme-api/opencode.json", keys: ["model", "theme"] },
+      ],
+      agents: [
+        { id: "build", name: "Build", mode: "primary" },
+        { id: "review", name: "Review", description: "Read-only reviewer", mode: "subagent" },
+      ],
+      modelCount: 12,
+    },
+    items: [],
+  },
+
   welcome: {
     ...base,
+    items: [],
+  },
+
+  // The same window on an agent whose session reported no model list: the picker
+  // is filled from the host's own OpenCode, and says where the list came from.
+  "remote-host-model-fallback": {
+    ...base,
+    cwd: "/srv/acme-api",
+    host: {
+      host: "build-box",
+      remoteName: "ssh-remote",
+      binary: "/home/dev/.opencode/bin/opencode",
+      version: "2.0.27",
+      configDir: "/home/dev/.config/opencode",
+      modelCount: 3,
+    },
+    configOptions: [
+      {
+        id: "model",
+        name: "Model",
+        type: "select",
+        category: "model",
+        options: [
+          { value: "opencode/big-pickle", label: "opencode/big-pickle" },
+          { value: "opencode/cat-jam-free", label: "opencode/cat-jam-free" },
+          { value: "opencode/space-bunny-free", label: "opencode/space-bunny-free" },
+        ],
+      },
+    ],
+    modelSource: "host",
+    items: [],
+  },
+
+  // A remote host whose catalog is mostly a custom provider: every model id is
+  // `corphub/…`, several of them nested one level deeper (`corphub/cc/…`).
+  omnirouter: {
+    ...base,
+    cwd: "/srv/acme-api",
+    host: {
+      host: "build-box",
+      remoteName: "ssh-remote",
+      binary: "/home/dev/.opencode/bin/opencode",
+      version: "2.0.27",
+      configDir: "/home/dev/.config/opencode",
+      modelCount: 20,
+      providers: [
+        {
+          id: "corphub",
+          name: "OmniRouter",
+          models: {
+            "claude-fable-5-1": "Claude Fable 5.1",
+            "claude-fable-5-1-max": "Claude Fable 5.1 Max",
+            "claude-haiku-4-5-20251001": "Claude Haiku 4.5",
+            "claude-haiku-5-5": "Claude Haiku 5.5",
+            "claude-opus-5-5": "Claude Opus 5.5",
+            "cc/claude-opus-5-5": "Claude Opus 5.5 (cc)",
+            "claude/claude-opus-5-5": "Claude Opus 5.5 (claude)",
+            "claude-sonnet-5-5": "Claude Sonnet 5.5",
+          },
+        },
+      ],
+    },
+    modelRecent: ["corphub/claude-opus-5-5", "corphub/cc/claude-opus-5-5"],
+    modelFavorite: ["corphub/claude-sonnet-5-5"],
+    // The agent offered a partial list; the rest was read from the host. This
+    // is the state a remote box actually lands in, where a custom provider in
+    // `opencode.json` is missing from what the agent enumerates.
+    modelSource: "merged",
+    configOptions: [
+      {
+        id: "model",
+        name: "Model",
+        type: "select",
+        category: "model",
+        current: "corphub/claude-opus-5-5",
+        options: [
+          { value: "corphub/claude-fable-5-1", label: "corphub/Claude Fable 5.1" },
+          { value: "corphub/claude-fable-5-1-max", label: "corphub/Claude Fable 5.1 Max" },
+          { value: "corphub/claude-haiku-4-5-20251001", label: "corphub/Claude Haiku 4.5" },
+          { value: "corphub/claude-haiku-5-5", label: "corphub/Claude Haiku 5.5" },
+          { value: "corphub/claude-opus-5-5", label: "corphub/Claude Opus 5.5" },
+          { value: "corphub/cc/claude-opus-5-5", label: "corphub/Claude Opus 5.5 (cc)" },
+          { value: "corphub/claude/claude-opus-5-5", label: "corphub/Claude Opus 5.5 (claude)" },
+          { value: "corphub/claude-sonnet-5-5", label: "corphub/Claude Sonnet 5.5" },
+          { value: "opencode/big-pickle", label: "opencode/Big Pickle" },
+          { value: "opencode/cat-jam-free", label: "opencode/Cat Jam Free" },
+          { value: "opencode/exo-free", label: "opencode/Exo Free" },
+          { value: "opencode/ling-3.0-flash-fin-free", label: "opencode/Ling 3.0 Flash Fin Free" },
+          { value: "opencode/ling-3.1-flash-free", label: "opencode/Ling 3.1 Flash Free" },
+          { value: "opencode/longcat-2.5-preview-free", label: "opencode/LongCat 2.5 Preview Free" },
+          { value: "opencode/mimo-v2.6-flash-free", label: "opencode/MiMo-V2.6-Flash Free" },
+          { value: "opencode/muse-spark-1.3-contributor-free", label: "opencode/Muse Spark 1.3 Free" },
+          { value: "opencode/nemotron-3-ultra-free", label: "opencode/Nemotron 3 Ultra Free" },
+          { value: "opencode/nemotron-3.5-lightning-free", label: "opencode/Nemotron 3.5 Lightning Free" },
+          { value: "opencode/space-bunny-free", label: "opencode/Space Bunny Free" },
+          { value: "opencode/step-5-preview-free", label: "opencode/Step 5 Preview Free" },
+        ],
+      },
+    ],
     items: [],
   },
 

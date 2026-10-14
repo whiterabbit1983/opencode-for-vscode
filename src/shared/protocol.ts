@@ -102,6 +102,43 @@ export interface ConfigOptionView {
 
 export type ConnectionState = "starting" | "ready" | "error" | "stopped";
 
+/**
+ * Which machine the agent and every setting below come from.
+ *
+ * `extensionKind` pins this extension to the workspace host, so under
+ * Remote-SSH this describes the remote box. It is shown in the UI because
+ * "whose model list is this?" is otherwise unanswerable — the answer is never
+ * the local machine's when a remote is attached.
+ */
+export interface HostInfoView {
+  /** Short name of the machine the agent runs on. */
+  host: string;
+  /** `ssh-remote`, `wsl`, … — absent in a local window. */
+  remoteName?: string;
+  /** The executable that was actually run. */
+  binary: string;
+  version?: string;
+  /** Where that install keeps its settings. */
+  configDir?: string;
+  stateDir?: string;
+  /** Config sources in load order, including a project `opencode.json`. */
+  sources?: Array<{ type: string; path: string; keys?: string[] }>;
+  /** Agents configured on that machine. */
+  agents?: Array<{ id: string; name: string; description?: string; mode?: string }>;
+  /**
+   * The providers that machine has configured, under the names their config
+   * gives them — `OmniRouter` for `corphub`.
+   *
+   * This is what lets the model picker head each group with a name a person
+   * would use, instead of a provider id that only its config knows.
+   */
+  providers?: Array<{ id: string; name?: string; models?: Record<string, string> }>;
+  /** How many models that machine can reach. */
+  modelCount?: number;
+  /** Set when the settings could not be read at all. */
+  error?: string;
+}
+
 export interface ChatState {
   connection: ConnectionState;
   connectionMessage?: string;
@@ -114,6 +151,33 @@ export interface ChatState {
   configOptions?: ConfigOptionView[];
   commands?: Array<{ name: string; description: string }>;
   model?: { id: string; name: string };
+  /**
+   * Where the model list came from.
+   *
+   * `host` means the session reported no model option of its own and the list
+   * was read from that machine's OpenCode instead. It is still that machine's
+   * list, but the session did not vouch for it, so the UI says so rather than
+   * presenting it as if the session had offered it.
+   *
+   * `merged` means the session offered a list and the machine's own catalog
+   * was added to it — the session's models first, then whatever it did not
+   * mention. A session's list is routinely a subset of what its machine can
+   * reach (a provider configured in `opencode.json` that the agent does not
+   * enumerate), so dropping the host catalog here would hide models that work.
+   */
+  modelSource?: "session" | "host" | "merged";
+  /**
+   * Models the OpenCode TUI has recently used and starred, most recent first.
+   *
+   * Read from that TUI's own `model.json`, so the picker can lead with the
+   * models this person actually works with instead of making them hunt through
+   * every provider on the machine. Both lists are intersected with what is on
+   * offer — a TUI can remember a model that has since been removed.
+   */
+  modelRecent?: string[];
+  modelFavorite?: string[];
+  /** The machine the agent and the settings above come from. */
+  host?: HostInfoView;
   usage?: Usage;
   retry?: { attempt: number; nextRetryAt: string; error: { type: string; message: string } };
   /** Prompts waiting behind a running turn, shown above the composer. */

@@ -6,6 +6,7 @@
  * Run with: `npm run smoke`
  */
 import { OpenCodeAgent } from "../src/agent/opencode-agent.js";
+import { machineName, readHostInfo } from "../src/agent/host-info.js";
 import { Thread } from "../src/session/thread.js";
 import type { Block, ChatItem } from "../src/shared/protocol.js";
 
@@ -70,6 +71,23 @@ async function main(): Promise<void> {
 
     // Give the agent a moment to send `available_commands_update`.
     await new Promise((resolve) => setTimeout(resolve, 500));
+
+    // What the machine the agent runs on has configured for itself. Over SSH
+    // this is the remote box, and it is what the UI shows when a session does
+    // not offer a model list of its own.
+    const launch = agent.launchInfo;
+    if (launch) {
+      const info = await readHostInfo({ binary: launch.binary, env: launch.env, cwd });
+      console.log(`\nhost (${machineName()}) ->`, launch.binary);
+      console.log("  version:", info.version ?? "(not reported)");
+      console.log("  config: ", info.paths?.config ?? "(not reported)");
+      console.log("  sources:", info.sources?.map((source) => source.path).join(", ") || "(none)");
+      console.log("  models: ", info.models?.length ?? 0);
+      console.log("  agents: ", info.agents?.map((agent) => agent.id).join(", ") || "(none)");
+      if (info.error) {
+        console.log("  error:  ", info.error);
+      }
+    }
 
     const listed = await agent.listSessions(cwd);
     console.log("session/list ->", listed.sessions.length, "session(s)");

@@ -67,6 +67,51 @@ Two things are easy to get wrong:
 
 If the agent fails to start, the error names the host it tried to run on.
 
+### Which machine's settings are these?
+
+Everything the chat shows — the model list, the modes, the agents — comes from
+the machine the **agent** runs on, which under Remote-SSH is the remote box and
+never the local one. To see for yourself, open the **more** menu (`…` in the
+header): it names the host, the `opencode` version, the binary that answered,
+where that install keeps its config, how many models it offers and how many
+config sources it loaded, global and project-level alike.
+
+Those settings are read straight from that machine's own OpenCode, using the
+same binary and environment the agent was started with, so what is shown cannot
+come from a different install than the one answering your prompts. If the
+session offers a model list of its own, that list wins; if it does not, the
+machine's models fill the picker instead and the menu says where they were read
+from.
+
+If the list is empty, the header tooltip names the host and the binary: that is
+the fastest way to tell a remote box that has not signed in to a provider from
+one whose `opencode` is not the install you think it is.
+
+### Finding a model
+
+A machine with a few providers can offer hundreds of models, so the picker is
+grouped and searchable rather than one flat list:
+
+- **Recent** and **Favourites** come first, read from the OpenCode TUI's own
+  `model.json` — the models you have actually used, and the ones you starred.
+- Every other model sits under a heading naming the provider that serves it,
+  taken from that provider's config, so a custom provider reads as *OmniRouter*
+  rather than `corphub`. Each heading says how many models it holds.
+- Type to filter. The label, the model id and the provider are all searched, so
+  `opus`, `claude-opus` and `corphub` each find what you would expect, and the
+  count reads `3 of 148 models`. `↑`/`↓` walk the results and `Enter` picks the
+  highlighted one.
+
+Nothing is dropped to make room: a model missing from the picker means that
+machine's OpenCode does not offer it, which is what the **more** menu's model
+count reflects.
+
+The list is the session's own models first — in the order the agent reports them
+— with the machine's own `opencode models` added behind them. That matters for a
+custom provider: an agent does not always enumerate a provider configured in
+`opencode.json`, and the host catalog is what knows about it. When the host
+contributed to the list, the picker says so.
+
 ## Commands
 
 | Command | What it does |
@@ -148,12 +193,15 @@ and the permission/form policies, then loads the built bundle against a stubbed
 It also starts the agent against stand-in binaries to prove the failures a
 remote host causes — a `PATH` that never saw the user's profile, an executable
 that dies instead of speaking ACP — fail with a usable message instead of
-hanging.
+hanging, and that the settings shown in the chat are the ones the machine the
+agent runs on actually has.
 
 `npm run smoke` spawns the real agent, performs `initialize` and `session/new`,
 sends a prompt, and folds the resulting `session/update` stream through the same
-reducer the extension uses. On a machine with no provider credentials it stops
-at `auth_required` — which is the sign-in path it was designed to exercise.
+reducer the extension uses. It also prints what that machine's OpenCode reports
+for its version, config sources, models and agents. On a machine with no
+provider credentials it stops at `auth_required` — which is the sign-in path it
+was designed to exercise.
 
 ### Previewing the UI
 
@@ -165,8 +213,9 @@ npm run build
 npm run preview            # writes screenshots of every scenario to dev/shots/
 ```
 
-Scenarios: `transcript`, `permission`, `question`, `welcome`, `error`. Add
-`&expand=N` to open the first `N` tool cards.
+Scenarios: `transcript`, `permission`, `question`, `welcome`, `error`,
+`remote-host`, `remote-host-model-fallback`. Add `&expand=N` to open the first
+`N` tool cards, or `&menu=model|mode|more` to leave a menu open.
 
 ## License
 

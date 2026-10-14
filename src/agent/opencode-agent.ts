@@ -74,7 +74,7 @@ export type AgentStatus = "stopped" | "starting" | "ready" | "error";
  * always the one that was configured: a bare name can be resolved to a path, and
  * an error about "the agent died" has to name the file that actually died.
  */
-type Launched = { child: ChildProcessWithoutNullStreams; binary: string };
+type Launched = { child: ChildProcessWithoutNullStreams; binary: string; env: NodeJS.ProcessEnv };
 
 export class AgentError extends Error {
   constructor(
@@ -211,6 +211,22 @@ export class OpenCodeAgent {
    */
   private resolved?: { requested: string; binary: string; envPath?: string };
 
+  /**
+   * The binary and environment the running agent was started with.
+   *
+   * Kept so the settings of *that* install can be read without resolving
+   * anything a second time: under Remote-SSH the machine that answers
+   * `opencode models` has to be the machine answering prompts, and asking a
+   * login shell again could land on a different answer than the one the agent
+   * is actually running.
+   */
+  private launched?: { binary: string; env: NodeJS.ProcessEnv };
+
+  /** What the running agent was started with, or `undefined` if it is not up. */
+  get launchInfo(): { binary: string; env: NodeJS.ProcessEnv } | undefined {
+    return this.launched;
+  }
+
   /* ---------------------------------------------------------------- */
   /* Lifecycle                                                         */
   /* ---------------------------------------------------------------- */
@@ -248,6 +264,7 @@ export class OpenCodeAgent {
     const { child } = launched;
 
     this.child = child;
+    this.launched = { binary: launched.binary, env: launched.env };
     this.stderrTail = [];
 
     child.stderr.setEncoding("utf8");
@@ -395,9 +412,10 @@ export class OpenCodeAgent {
   private async launch(settings: OpenCodeSettings, args: string[]): Promise<Launched> {
     const remembered = this.resolved;
     if (remembered?.requested === settings.binaryPath) {
+      const env = this.childEnv(settings, remembered.envPath);
       try {
-        const child = await this.spawnChild(remembered.binary, args, this.childEnv(settings, remembered.envPath));
-        return { child, binary: remembered.binary };
+        const child = await this.spawnChild(remembered.binary, args, env);
+        return { child, binary: remembered.binary, env };
       } catch (error) {
         // Whatever it found last time is gone or no longer runnable; fall
         // through and look again rather than repeating a failure.
@@ -407,10 +425,11 @@ export class OpenCodeAgent {
     }
 
     const binary = expandHome(settings.binaryPath, homedir());
+    const env = this.childEnv(settings);
     try {
-      const child = await this.spawnChild(binary, args, this.childEnv(settings));
+      const child = await this.spawnChild(binary, args, env);
       this.resolved = undefined;
-      return { child, binary };
+      return { child, binary, env };
     } catch (error) {
       if (!isNotFound(error)) {
         throw error;
@@ -423,9 +442,10 @@ export class OpenCodeAgent {
     }
 
     log.info("resolved `%s` to %s on %s", settings.binaryPath, found.binary, hostLabel());
-    const child = await this.spawnChild(found.binary, args, this.childEnv(settings, found.envPath));
+    const foundEnv = this.childEnv(settings, found.envPath);
+    const child = await this.spawnChild(found.binary, args, foundEnv);
     this.resolved = { requested: settings.binaryPath, binary: found.binary, envPath: found.envPath };
-    return { child, binary: found.binary };
+    return { child, binary: found.binary, env: foundEnv };
   }
 
   /**
@@ -601,6 +621,7 @@ export class OpenCodeAgent {
     const detail = code === 0 ? undefined : exitDetail("opencode", code, signal, this.lastStderrLine());
     this.child = undefined;
     this.connection = undefined;
+    this.launched = undefined;
     this.setStatus("error", detail);
     log.warn("opencode acp process exited (code=%s signal=%s)", code, signal);
   }
@@ -782,6 +803,7 @@ export class OpenCodeAgent {
   private async terminateChild(): Promise<void> {
     const child = this.child;
     this.child = undefined;
+    this.launched = undefined;
     this.connection?.close();
     this.connection = undefined;
     this.app = undefined;

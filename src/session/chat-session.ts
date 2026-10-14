@@ -22,16 +22,19 @@ import {
   OpenCodeAgent,
   toAgentError,
 } from "../agent/opencode-agent.js";
+import { machineName, readHostInfo, type HostInfo } from "../agent/host-info.js";
 import { readSettings } from "../config.js";
 import { describeError, log } from "../logger.js";
 import type {
   Block,
   ChatState,
   ConfigOptionView,
+  HostInfoView,
   PermissionRequest,
   Question,
   SessionSummary,
 } from "../shared/protocol.js";
+import { hostModelCurrent, modelOptionsFromHost } from "../shared/opencode-cli.js";
 import { modelName } from "../shared/model-name.js";
 import { isPersistable, mergeUsage, noUsageMemory, usageToSeed, type Usage, type UsageMemory } from "../shared/usage.js";
 import { modelToRestore, noModelMemory, type ModelMemory } from "./model-memory.js";
@@ -85,6 +88,18 @@ export class ChatSession implements vscode.Disposable {
   private configOptions: ConfigOptionView[] = [];
   private commands?: ChatState["commands"];
 
+  /**
+   * What the machine running the agent has configured for itself.
+   *
+   * Read once per agent process, because it describes the install rather than
+   * the conversation. Under Remote-SSH this is the remote box's configuration,
+   * read with the same binary and environment the agent itself was started
+   * with.
+   */
+  private hostInfo?: HostInfo;
+  /** In-flight read, so several starts do not each spawn their own probes. */
+  private hostInfoRead?: Promise<void>;
+
   private readonly permissions = new Map<string, PendingPermission>();
   private readonly questions = new Map<string, PendingQuestion>();
   private counter = 0;
@@ -129,6 +144,7 @@ export class ChatSession implements vscode.Disposable {
 
   snapshot(): ChatState {
     const settings = readSettings();
+    const configOptions = this.effectiveConfigOptions();
     return {
       connection: this.connection,
       connectionMessage: this.connectionMessage,
@@ -138,9 +154,13 @@ export class ChatSession implements vscode.Disposable {
       items: this.thread.snapshot(),
       plan: settings.showPlan ? this.thread.plan : undefined,
       modes: this.modes,
-      configOptions: this.configOptions.length ? this.configOptions : undefined,
+      configOptions: configOptions.length ? configOptions : undefined,
       commands: this.commands,
-      model: currentModel(this.configOptions),
+      model: currentModel(configOptions),
+      modelSource: this.modelSource(configOptions),
+      modelRecent: this.tuiModels(configOptions, "recent"),
+      modelFavorite: this.tuiModels(configOptions, "favorite"),
+      host: this.hostView(),
       usage: this.thread.usage,
       retry: this.thread.retry,
       queue: this.queueView(),
@@ -167,6 +187,179 @@ export class ChatSession implements vscode.Disposable {
 
   get threadRef(): Thread {
     return this.thread;
+  }
+
+  /**
+   * The config options as the UI should see them.
+   *
+   * The session's own models come first, in the order it sent them and under
+   * the labels it gave them. The machine's own catalog is *added* to that list
+   * rather than standing in for it: a session routinely offers a subset of what
+   * its machine can reach — a provider configured in `opencode.json` that the
+   * agent does not enumerate is the ordinary case — so a list that replaced the
+   * session's the moment it was non-empty hid those models entirely. Only when
+   * the session offers nothing at all is the host's list the whole answer.
+   */
+  private effectiveConfigOptions(): ConfigOptionView[] {
+    const models = this.hostInfo?.models;
+    if (!models?.length) {
+      this.hostModelOption = undefined;
+      return this.configOptions;
+    }
+
+    const index = this.modelOptionIndex(this.configOptions);
+    const sessionOption = index >= 0 ? this.configOptions[index] : undefined;
+    const sessionModels = sessionOption?.options ?? [];
+    const seen = new Set(sessionModels.map((option) => option.value));
+    const added = modelOptionsFromHost(models).filter((option) => !seen.has(option.value));
+    const options = [...sessionModels, ...added];
+
+    // `snapshot()` runs on every throttled frame while a turn streams, so the
+    // merged option is rebuilt only when its inputs actually move.
+    const remembered = this.modelMemory.read();
+    if (
+      !this.hostModelOption ||
+      this.hostModelOption.models !== models ||
+      this.hostModelOption.session !== sessionOption?.options ||
+      this.hostModelOption.remembered !== remembered
+    ) {
+      this.hostModelOption = {
+        models,
+        session: sessionOption?.options,
+        remembered,
+        option: {
+          ...(sessionOption ?? { id: "model", name: "Model", type: "select", category: "model" }),
+          options,
+          // The session's own answer to "which model is this" stands. Only when
+          // it gave none is a remembered model marked current, and only when the
+          // host is known to offer it — claiming a selection the agent never
+          // reported would tick the wrong row.
+          current: sessionOption?.current ?? hostModelCurrent(models, remembered),
+        },
+      };
+    }
+    // An empty option is *replaced*, not joined by a second one beside it.
+    // Everything downstream — the menu, the chip, the remembered model — looks
+    // its option up by id and takes the first match, so a leftover empty `model`
+    // would go on shadowing the host's list.
+    const result = [...this.configOptions];
+    if (index >= 0) {
+      result[index] = this.hostModelOption.option;
+    } else {
+      result.push(this.hostModelOption.option);
+    }
+    return result;
+  }
+
+  private hostModelOption?: {
+    models: string[];
+    session?: ConfigOptionView["options"];
+    remembered: string | undefined;
+    option: ConfigOptionView;
+  };
+
+  /** Where the model option sits in a list, by id or failing that by category. */
+  private modelOptionIndex(options: ConfigOptionView[]): number {
+    return options.findIndex((option) => option.id === "model" || option.category === "model");
+  }
+
+  /**
+   * Whether these options contain a model list that is actually usable.
+   *
+   * An option that exists but offers no choices does not count: a session that
+   * reports an empty `model` select has told the picker nothing, and treating
+   * that as "the agent offered a list" would switch off the host fallback and
+   * leave the menu reading *Agent did not offer any models* on a machine whose
+   * OpenCode can list its models perfectly well.
+   */
+  private hasModelOption(options: ConfigOptionView[]): boolean {
+    const index = this.modelOptionIndex(options);
+    return index >= 0 && Boolean(options[index].options?.length);
+  }
+
+  /** Whether the model list on screen is the session's, the host's, or both. */
+  private modelSource(configOptions: ConfigOptionView[]): ChatState["modelSource"] {
+    if (!this.hasModelOption(configOptions)) {
+      return undefined;
+    }
+    if (!this.hasModelOption(this.configOptions)) {
+      return "host";
+    }
+    // Both lists are in play. Say so when the host actually contributed: a
+    // session whose catalog already covered the machine's says nothing.
+    const sessionCount = this.configOptions[this.modelOptionIndex(this.configOptions)].options?.length ?? 0;
+    const shown = configOptions[this.modelOptionIndex(configOptions)].options?.length ?? 0;
+    return shown > sessionCount ? "merged" : "session";
+  }
+
+  /**
+   * What the TUI remembers, narrowed to the models actually on offer.
+   *
+   * The TUI remembers models across every directory it has ever run in, so an
+   * entry can name something this session cannot pick. Those are dropped rather
+   * than offered as a choice that would be refused — and `undefined` when
+   * nothing survives, so the picker does not render an empty section.
+   */
+  private tuiModels(configOptions: ConfigOptionView[], list: "recent" | "favorite"): string[] | undefined {
+    const offered = this.modelOptionIndex(configOptions);
+    if (offered < 0) {
+      return undefined;
+    }
+    const values = new Set(configOptions[offered].options?.map((option) => option.value));
+    const remembered = (this.hostInfo?.tuiModels?.[list] ?? []).filter((id) => values.has(id));
+    return remembered.length ? remembered : undefined;
+  }
+
+  /** The host summary the UI shows, so settings can be traced to a machine. */
+  private hostView(): HostInfoView | undefined {
+    const info = this.hostInfo;
+    if (!info) {
+      return undefined;
+    }
+    return {
+      host: machineName(),
+      remoteName: vscode.env.remoteName,
+      binary: info.binary,
+      version: info.version,
+      configDir: info.paths?.config,
+      stateDir: info.paths?.state,
+      sources: info.sources?.length ? info.sources : undefined,
+      agents: info.agents?.length ? info.agents : undefined,
+      providers: info.providers?.length ? info.providers : undefined,
+      modelCount: info.models?.length,
+      error: info.error,
+    };
+  }
+
+  /**
+   * Reads the settings of the machine the agent runs on, once per agent.
+   *
+   * Started in the background and never awaited by `start()`: the chat is
+   * usable without this, and the answer arriving a moment later is what fills
+   * in the host summary and, where it is needed, the model list.
+   */
+  private loadHostInfo(cwd: string): void {
+    if (this.hostInfoRead) {
+      return;
+    }
+    const launch = this.agent.launchInfo;
+    if (!launch) {
+      return;
+    }
+    this.hostInfoRead = readHostInfo({ binary: launch.binary, env: launch.env, cwd })
+      .then((info) => {
+        this.hostInfo = info;
+        this.touch();
+      })
+      .catch((error) => {
+        log.warn("could not read this machine's OpenCode settings: %s", describeError(error));
+      });
+  }
+
+  /** Forgets the host summary, so a restarted agent is asked again. */
+  private resetHostInfo(): void {
+    this.hostInfo = undefined;
+    this.hostInfoRead = undefined;
   }
 
   private summary(): SessionSummary | undefined {
@@ -233,6 +426,10 @@ export class ChatSession implements vscode.Disposable {
       throw agentError;
     }
 
+    // Asked for in the background: the settings describe the machine, not the
+    // conversation, so waiting on them would only delay the first prompt.
+    this.loadHostInfo(cwd);
+
     try {
       if (preferredSessionId) {
         await this.restore(preferredSessionId, cwd);
@@ -285,7 +482,7 @@ export class ChatSession implements vscode.Disposable {
    * surprising.
    */
   private async applyRememberedModel(): Promise<void> {
-    const restore = modelToRestore(this.configOptions, this.modelMemory.read());
+    const restore = modelToRestore(this.effectiveConfigOptions(), this.modelMemory.read());
     if (!restore) {
       return;
     }
@@ -403,6 +600,9 @@ export class ChatSession implements vscode.Disposable {
     this.cancelAllPending("agent restarted");
     this.dropQueuedPrompts("The agent restarted before these were sent.");
     this.busy = false;
+    // A different process may well be a different install, so its settings are
+    // asked for again rather than carried over from the one that just died.
+    this.resetHostInfo();
     const sessionId = this.sessionId;
     await this.agent.restart();
     await this.start(vscode.Uri.file(this.cwd ?? process.cwd()), sessionId);
@@ -628,12 +828,24 @@ export class ChatSession implements vscode.Disposable {
     if (!this.sessionId) {
       return;
     }
+    let failure: string | undefined;
     const response = await this.agent.setConfigOption(this.sessionId, configId, value).catch((error) => {
-      log.warn("set config option failed: %s", describeError(error));
+      // Reported rather than swallowed when the choice came from the host's own
+      // list: the user picked something they could see, so being told it did
+      // not take is the difference between a stale chip and a broken one.
+      failure = describeError(error);
+      log.warn("set config option failed: %s", failure);
       return undefined;
     });
     if (response) {
       this.configOptions = toConfigOptions(response.configOptions);
+    } else if (failure && this.modelSource(this.effectiveConfigOptions()) === "host") {
+      this.thread.addNotice(
+        "warning",
+        "This agent does not offer that setting",
+        `OpenCode did not accept ${configId} = ${value}. The list came from ${machineName()}, but this session cannot change it.`,
+      );
+      this.emitTranscript();
     }
     // Only an explicit pick is remembered. The agent also pushes model changes
     // of its own accord (subagents, retries), and those are not what the user

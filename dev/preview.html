@@ -175,6 +175,21 @@
           }
         }
 
+        // `?menu=<model|mode|more>` opens a menu, so what it says about the
+        // host and the model list can be reviewed without an agent.
+        const menu = new URLSearchParams(location.search).get("menu");
+        if (menu) {
+          const anchor =
+            menu === "more"
+              ? document.querySelector('[data-action="more"]')
+              : document.querySelector(`[data-menu="${menu}"]`);
+          if (!anchor) {
+            showFailure("menu", `no anchor for the ${menu} menu`);
+          } else {
+            anchor.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+          }
+        }
+
         // The boot sequence must be identical every run; only the extra `then` state
         // may follow it.
         const steps = window.__steps.join(" ");

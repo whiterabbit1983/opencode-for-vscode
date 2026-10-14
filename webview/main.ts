@@ -52,6 +52,10 @@ interface UiState {
   openThoughts: Set<string>;
   /** Which composer menu is open. */
   menu: "none" | "model" | "mode" | "more";
+  /** What the user has typed into the model picker's filter. */
+  modelFilter: string;
+  /** Which choice in the model picker is highlighted, by model id. */
+  modelIndex: string | undefined;
   /**
    * The click that opened the current menu.
    *
@@ -93,6 +97,8 @@ const state: UiState = {
   planOpen: true,
   openThoughts: new Set(),
   menu: "none",
+  modelFilter: "",
+  modelIndex: undefined,
   draft: "",
   questionDrafts: {},
   picker: { open: false, query: "", from: 0, files: [], index: 0, requestId: 0, waiting: false },
@@ -311,6 +317,25 @@ function wireEvents(): void {
   root.addEventListener("click", (event) => onClick(event));
   root.addEventListener("submit", (event) => event.preventDefault());
   root.addEventListener("keydown", (event) => onPromptKey(event));
+
+  // The picker is re-rendered wholesale on every keystroke, so its input is
+  // wired once on the menu itself rather than on a node that keeps being
+  // replaced. Focus has to be restored after each render or typing would stop
+  // at the first character.
+  const menu = dom.menu;
+  menu.addEventListener("input", (event) => {
+    if (!(event.target instanceof HTMLInputElement) || !event.target.classList.contains("menu-filter")) {
+      return;
+    }
+    state.modelFilter = event.target.value;
+    renderMenu();
+  });
+  menu.addEventListener("keydown", (event) => {
+    if (state.menu !== "model" || !(event.target instanceof HTMLInputElement)) {
+      return;
+    }
+    onModelFilterKey(event);
+  });
 
   document.addEventListener("click", (event) => {
     if (state.menu === "none") {
@@ -738,12 +763,20 @@ function applyFontSize(): void {
 function toggleMenu(kind: Exclude<UiState["menu"], "none">, event?: Event): void {
   state.menu = state.menu === kind ? "none" : kind;
   state.menuOpenedBy = state.menu === "none" ? undefined : event;
+  // A fresh opening starts unfiltered, on the model already in use, so Enter
+  // re-picks what is selected rather than something arbitrary.
+  if (state.menu === "model") {
+    state.modelFilter = "";
+    state.modelIndex = selectOption("model")?.current;
+  }
   renderMenu();
 }
 
 function closeMenu(): void {
   state.menu = "none";
   state.menuOpenedBy = undefined;
+  state.modelFilter = "";
+  state.modelIndex = undefined;
   renderMenu();
 }
 
@@ -800,17 +833,111 @@ function renderMenu(): void {
   }
 
   menu.hidden = false;
+  // The model picker is the only menu that scrolls its list rather than itself,
+  // so the filter and the count stay put; the class is what the CSS keys off.
+  menu.classList.toggle("menu-model", state.menu === "model");
   menu.innerHTML = menuContent(state.menu);
   positionMenu();
+  if (state.menu === "model") {
+    focusModelFilter();
+    scrollModelHighlightIntoView();
+  }
+}
+
+/**
+ * Puts the caret back in the filter after a re-render.
+ *
+ * The menu is rebuilt wholesale on every keystroke and every arrow press, which
+ * would otherwise drop focus to the body after the first character — so the
+ * filter is refocused and the caret put back where the user left it.
+ */
+function focusModelFilter(): void {
+  const filter = menuElement()?.querySelector<HTMLInputElement>(".menu-filter");
+  if (!filter || document.activeElement === filter) {
+    return;
+  }
+  const caret = state.modelFilter.length;
+  filter.focus({ preventScroll: true });
+  filter.setSelectionRange(caret, caret);
+}
+
+/** Keeps the highlighted row visible as the arrows walk a long list. */
+function scrollModelHighlightIntoView(): void {
+  const menu = menuElement();
+  const row = menu?.querySelector<HTMLElement>(".menu-item.active");
+  // `block: "nearest"` scrolls only when the row is actually off screen, so a
+  // walk through a short list does not jolt the menu.
+  row?.scrollIntoView({ block: "nearest" });
+}
+
+/**
+ * Handles a key in the model picker's filter.
+ *
+ * Typing belongs to the input, so only the keys that cannot mean anything else
+ * are taken: the arrows walk the choices without leaving the field, Enter picks
+ * the highlighted one, and Escape closes. Everything else falls through to the
+ * input, so `c` filters and `/` types a slash rather than being swallowed.
+ */
+function onModelFilterKey(event: KeyboardEvent): void {
+  switch (event.key) {
+    case "ArrowDown":
+      event.preventDefault();
+      moveModelHighlight(1);
+      return;
+    case "ArrowUp":
+      event.preventDefault();
+      moveModelHighlight(-1);
+      return;
+    case "Enter": {
+      event.preventDefault();
+      const choice = state.modelIndex;
+      if (choice) {
+        applyMenuPick("model", choice);
+      } else {
+        closeMenu();
+      }
+      return;
+    }
+    case "Escape":
+      event.preventDefault();
+      closeMenu();
+      return;
+    default:
+      return;
+  }
+}
+
+/**
+ * Moves the highlight through the choices currently on screen.
+ *
+ * The walk is over what the filter left visible, and it wraps: a list long
+ * enough to need a filter is long enough that holding `↓` should not dead-end.
+ */
+function moveModelHighlight(step: number): void {
+  const visible = visibleModelValues();
+  if (!visible.length) {
+    return;
+  }
+  const at = visible.indexOf(state.modelIndex ?? "");
+  const next = at === -1 ? (step > 0 ? 0 : visible.length - 1) : (at + step + visible.length) % visible.length;
+  state.modelIndex = visible[next];
+  renderMenu();
+}
+
+/** The model ids on screen right now, in the order they are drawn. */
+function visibleModelValues(): string[] {
+  return Array.from(menuElement()?.querySelectorAll<HTMLElement>(".menu-item[data-kind='model']") ?? []).map(
+    (element) => element.dataset.value ?? "",
+  );
+}
+
+function menuElement(): HTMLElement | undefined {
+  return dom.menu as HTMLElement | undefined;
 }
 
 function menuContent(kind: Exclude<UiState["menu"], "none">): string {
   if (kind === "model") {
-    const options = selectOption("model");
-    if (!options?.options?.length) {
-      return `<div class="menu-label">Model</div><div class="menu-item" aria-disabled="true">Agent did not offer any models</div>`;
-    }
-    return `<div class="menu-label">Model</div>${renderChoices("model", options)}`;
+    return modelMenu();
   }
 
   if (kind === "mode") {
@@ -863,6 +990,7 @@ function menuContent(kind: Exclude<UiState["menu"], "none">): string {
 
   // "more" menu
   return [
+    hostNote(),
     `<div class="menu-label">OpenCode</div>`,
     `<button class="menu-item" data-action="menu-cmd" data-value="new">${icon("add")} New chat</button>`,
     `<button class="menu-item" data-action="menu-cmd" data-value="history">${icon("history")} Resume chat…</button>`,
@@ -872,6 +1000,278 @@ function menuContent(kind: Exclude<UiState["menu"], "none">): string {
     `<button class="menu-item" data-action="sign-in">${icon("sign-in")} Sign in…</button>`,
     `<button class="menu-item" data-action="menu-cmd" data-value="log">${icon("output")} Show log</button>`,
   ].join("");
+}
+
+/**
+ * Which machine the models and settings on screen came from.
+ *
+ * Under Remote-SSH the answer is never "this machine the window is on", so the
+ * menu says it outright instead of leaving the user to wonder whether a model
+ * list is theirs or their server's. The binary path is included because it is
+ * the other half of the question — *which* install answered.
+ */
+function hostNote(): string {
+  const host = state.chat.host;
+  if (!host) {
+    return "";
+  }
+  const where = host.remoteName ? `${host.host} (${host.remoteName})` : host.host;
+  const version = host.version ? `opencode ${host.version}` : "opencode";
+  const detail = [
+    host.binary,
+    host.configDir ? `config ${host.configDir}` : undefined,
+    host.modelCount !== undefined ? plural(host.modelCount, "model") : undefined,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  return (
+    `<div class="menu-note"><strong>${escapeHtml(where)}</strong>` +
+    `${escapeHtml(`${version} · ${plural(host.sources?.length ?? 0, "config source")}`)}<br />` +
+    `<code>${escapeHtml(detail)}</code></div>`
+  );
+}
+
+/** `1 model` / `2 models`, so a count never reads as `1 model(s)`. */
+function plural(count: number, noun: string): string {
+  return `${count} ${noun}${count === 1 ? "" : "s"}`;
+}
+
+/**
+ * A note on the model list when it did not come from the session alone.
+ *
+ * Both cases add models the session did not offer, read from the same install
+ * the agent runs — `host` when it offered none at all, `merged` when its own
+ * list was added to. Saying which is better than a picker that looks
+ * authoritative and is not.
+ */
+function modelSourceNote(): string {
+  const host = state.chat.host?.host ?? "this machine";
+  if (state.chat.modelSource === "host") {
+    return `<div class="menu-note">Read from <code>${escapeHtml(host)}</code> — this agent did not offer a model list.</div>`;
+  }
+  if (state.chat.modelSource === "merged") {
+    return `<div class="menu-note">This agent offered a partial list; the rest was read from <code>${escapeHtml(host)}</code>.</div>`;
+  }
+  return "";
+}
+
+/* ------------------------------------------------------------------ */
+/* The model picker                                                    */
+/* ------------------------------------------------------------------ */
+
+/**
+ * One group of models under a heading.
+ *
+ * `kind` decides how the heading reads: the remembered groups say where they
+ * came from, a provider group says which provider serves those models and how
+ * many of them there are, so a long catalog is countable rather than one
+ * undifferentiated wall of rows.
+ */
+interface ModelGroup {
+  kind: "recent" | "favorite" | "provider";
+  heading: string;
+  note?: string;
+  models: ModelChoice[];
+}
+
+interface ModelChoice {
+  value: string;
+  label: string;
+}
+
+/**
+ * Builds the model picker.
+ *
+ * A flat list is not usable once a machine carries a few hundred models — which
+ * is exactly the state a provider like OmniRouter creates — so the list is cut
+ * three ways: the models this person actually works with first, then one section
+ * per provider under the name that provider's config gives it, then a filter
+ * over all of it so nothing is out of reach.
+ */
+function modelMenu(): string {
+  const option = selectOption("model");
+  const all: ModelChoice[] = option?.options ?? [];
+  if (!all.length) {
+    return `<div class="menu-label">Model</div><div class="menu-item" aria-disabled="true">Agent did not offer any models</div>`;
+  }
+
+  const query = state.modelFilter.trim().toLowerCase();
+  const shown = query ? all.filter((choice) => matchesFilter(choice, query)) : all;
+  const groups = groupModels(shown, Boolean(query));
+  // The highlighted row has to be one that is actually on screen: a filter can
+  // hide the row that was highlighted when the menu opened.
+  const highlighted = shown.some((choice) => choice.value === state.modelIndex)
+    ? state.modelIndex
+    : shown[0]?.value;
+
+  const body = groups.length
+    ? groups.map(renderModelGroup).join("")
+    : `<div class="menu-item" aria-disabled="true">No model matches “${escapeHtml(state.modelFilter.trim())}”</div>`;
+
+  return (
+    `<div class="menu-label">Model</div>` +
+    modelSourceNote() +
+    // `combobox` + `listbox` is the pattern a filterable dropdown is meant to
+    // use: focus stays in the field, and `aria-activedescendant` names the row
+    // the arrow keys are on, so it is announced without focus ever leaving it.
+    `<input class="menu-filter" type="text" role="combobox" aria-expanded="true"` +
+    ` aria-controls="model-listbox" aria-autocomplete="list"` +
+    ` aria-activedescendant="${highlighted ? `model-choice-${escapeHtml(highlighted)}` : ""}"` +
+    ` placeholder="Filter ${all.length} models…" aria-label="Filter models"` +
+    ` value="${escapeHtml(state.modelFilter)}" />` +
+    `<div class="menu-filter-count">${escapeHtml(filterCount(shown.length, all.length))}</div>` +
+    `<div class="menu-body" role="listbox" id="model-listbox">` +
+    body +
+    `</div>` +
+    modelCountNote(shown.length, all.length)
+  );
+}
+
+/** What the counter under the filter reads. */
+function filterCount(shown: number, total: number): string {
+  const models = `${total} model${total === 1 ? "" : "s"}`;
+  return shown === total ? models : `${shown} of ${models}`;
+}
+
+/**
+ * Whether a model matches what the user typed.
+ *
+ * Both the readable label and the raw id are searched, so `opus` finds
+ * `Claude Opus 5.5` and `corphub` finds everything OmniRouter serves, even
+ * where the label the agent supplies says neither.
+ */
+function matchesFilter(choice: ModelChoice, query: string): boolean {
+  return `${choice.label} ${choice.value}`.toLowerCase().includes(query);
+}
+
+/** A one-line tally under the list, so a filter that hid things says so. */
+function modelCountNote(shown: number, total: number): string {
+  if (shown === total) {
+    return "";
+  }
+  return `<div class="menu-note">${shown} of ${total} models shown</div>`;
+}
+
+/**
+ * Cuts the models into the sections the picker draws.
+ *
+ * While a filter is active the remembered groups are left out: every result is
+ * already on screen, and re-listing the recents on top would duplicate rows the
+ * user is trying to read between.
+ */
+function groupModels(models: ModelChoice[], filtering: boolean): ModelGroup[] {
+  const groups: ModelGroup[] = [];
+
+  if (!filtering) {
+    for (const [kind, ids] of [
+      ["recent", state.chat.modelRecent ?? []],
+      ["favorite", state.chat.modelFavorite ?? []],
+    ] as const) {
+      const chosen = ids
+        .map((id) => models.find((choice) => choice.value === id))
+        .filter((choice): choice is ModelChoice => Boolean(choice));
+      if (chosen.length) {
+        groups.push({
+          kind,
+          heading: kind === "recent" ? "Recent" : "Favourites",
+          note: kind === "recent" ? "from the OpenCode TUI" : "starred in the OpenCode TUI",
+          models: chosen,
+        });
+      }
+    }
+  }
+
+  const remembered = new Set(groups.flatMap((group) => group.models.map((choice) => choice.value)));
+  const byProvider = new Map<string, ModelChoice[]>();
+  for (const choice of models) {
+    if (remembered.has(choice.value)) {
+      continue;
+    }
+    const provider = providerOf(choice.value);
+    byProvider.set(provider, [...(byProvider.get(provider) ?? []), choice]);
+  }
+
+  // Providers keep the order the agent sent them in — already grouped and sorted
+  // upstream — rather than being re-sorted here, so the picker and the TUI agree
+  // on what comes first.
+  for (const [provider, choices] of byProvider) {
+    groups.push({
+      kind: "provider",
+      heading: providerName(provider),
+      note: `${choices.length} model${choices.length === 1 ? "" : "s"}`,
+      models: choices,
+    });
+  }
+
+  return groups;
+}
+
+/** The provider part of a model id, or the whole id when it has no prefix. */
+function providerOf(id: string): string {
+  const slash = id.indexOf("/");
+  return slash <= 0 ? id : id.slice(0, slash);
+}
+
+/**
+ * The name to head a provider's section with.
+ *
+ * The config knows a provider by a name a person would use — `corphub` is
+ * OmniRouter — so that is what the heading says. The id goes beside it in the
+ * note, because it is what the model ids are built from and someone reading an
+ * error message will be looking for it.
+ */
+function providerName(id: string): string {
+  const configured = state.chat.host?.providers?.find((provider) => provider.id === id)?.name;
+  return configured && configured !== id ? configured : id;
+}
+
+/**
+ * One section of the model picker.
+ *
+ * The heading is a plain element rather than a listbox option: `aria-label` on
+ * the group is what names the section, and putting the heading inside the
+ * group would make it selectable.
+ */
+function renderModelGroup(group: ModelGroup): string {
+  const note = group.note ? `<span class="menu-group-note">${escapeHtml(group.note)}</span>` : "";
+  return (
+    `<div class="menu-group-label">${escapeHtml(group.heading)}${note}</div>` +
+    `<div class="menu-group" role="group" aria-label="${escapeHtml(group.heading)}">` +
+    group.models.map((choice) => renderModelChoice(choice, group.kind === "provider")).join("") +
+    `</div>`
+  );
+}
+
+/**
+ * One model row.
+ *
+ * A `role="option"` inside the listbox rather than a menu item: the highlighted
+ * row is the combobox's `aria-activedescendant`, and `aria-selected` is what
+ * carries the tick, so assistive tech reads "selected" off the row it is on
+ * rather than off a separate menu.
+ *
+ * `named` says the section heading already names the provider, which is the
+ * case inside a provider group — repeating `corphub` under a heading that says
+ * OmniRouter is noise on every row.
+ */
+function renderModelChoice(choice: ModelChoice, named: boolean): string {
+  const label = modelLabel(choice.value, choice.label);
+  const selected = choice.value === currentModelId();
+  const provider = named ? "" : label.provider ?? "";
+  return (
+    `<button class="menu-item${choice.value === state.modelIndex ? " active" : ""}"` +
+    ` id="model-choice-${escapeHtml(choice.value)}" role="option"` +
+    ` data-action="menu-pick" data-kind="model" data-value="${escapeHtml(choice.value)}"` +
+    ` aria-selected="${selected}">` +
+    `${escapeHtml(label.name)}` +
+    (provider ? `<span class="desc">${escapeHtml(provider)}</span>` : "") +
+    `</button>`
+  );
+}
+
+/** The model the session is on, for the row that carries the tick. */
+function currentModelId(): string | undefined {
+  return selectOption("model")?.current;
 }
 
 /** Finds a configuration option by id, falling back to its category. */
@@ -990,8 +1390,8 @@ function renderHeader(): void {
   }
   dom.dot.title =
     connection === "ready"
-      ? `OpenCode connected${session ? ` — session ${session.sessionId}` : ""}`
-      : state.chat.connectionMessage ?? "OpenCode is not running";
+      ? [`OpenCode connected${session ? ` — session ${session.sessionId}` : ""}`, hostLine()].filter(Boolean).join("\n")
+      : [state.chat.connectionMessage ?? "OpenCode is not running", hostLine()].filter(Boolean).join("\n");
 
   const send = dom.send;
   send.classList.toggle("stop", busy);
@@ -999,6 +1399,16 @@ function renderHeader(): void {
     ? `<span class="codicon codicon-debug-stop"></span>`
     : `<span class="codicon codicon-send"></span>`;
   send.title = busy ? "Stop generating" : "Send";
+}
+
+/** One line naming the machine the agent, models and settings come from. */
+function hostLine(): string | undefined {
+  const host = state.chat.host;
+  if (!host) {
+    return undefined;
+  }
+  const version = host.version ? host.version : "version unknown";
+  return `Running on ${host.host}${host.remoteName ? ` (${host.remoteName})` : ""} — opencode ${version} at ${host.binary}`;
 }
 
 function renderBanner(): void {

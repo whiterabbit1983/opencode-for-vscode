@@ -6,8 +6,70 @@ All notable changes to this extension are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-10-14
+
+### Fixed
+
+- A session that reports a *non-empty* `model` list no longer hides the models
+  its machine can reach but the session did not mention. The host's catalog was
+  only consulted when the session offered nothing, so any provider the agent
+  chose not to enumerate simply vanished from the picker — most visibly over
+  Remote-SSH, where a custom provider such as OmniRouter is configured in
+  `opencode.json` but is missing from what the agent reports, leaving the
+  provider section absent on a machine that is configured for it. The two lists
+  are now joined instead of swapped: the session's models lead, in its order and
+  under its labels, the machine's are appended without repeats, and the model
+  the session says it is on keeps the tick. The picker says when the host
+  contributed to what is on screen.
+
+## [0.2.1] - 2026-10-14
+
 ### Added
 
+- The model picker is now searchable and grouped by provider, so every model a
+  machine offers is reachable instead of one flat wall of rows. Type to filter —
+  the label, the model id and the provider are all searched, and the count
+  reads `3 of 148 models`. `↑`/`↓` walk the results, `Enter` picks the
+  highlighted one, `Escape` closes, and the filter and the counts stay put while
+  the list scrolls. Sections are headed by the name the provider's own config
+  gives it, so a custom provider reads as **OmniRouter** rather than `corphub`.
+- The models the OpenCode TUI has recently used, and the ones starred in it,
+  now lead the picker. They are read from that TUI's own `model.json`, so the
+  extension starts from the models you actually work with and agrees with the
+  TUI about which those are. Anything the TUI remembers that this session cannot
+  offer is left out rather than shown as a choice that would be refused.
+
+### Fixed
+
+- A session that reports a `model` option with no choices in it no longer
+  suppresses the host's own model list. An empty select says the agent offered
+  no list at all, so the machine's `opencode models` is used instead — which
+  matters for providers that only that command reports, such as a custom
+  provider like OmniRouter. Previously the picker read *Agent did not offer any
+  models* on a host that could in fact list every model it can reach. The host's
+  list also replaces the empty option rather than sitting beside it, which had
+  left the empty one shadowing it.
+
+## [0.2.0] - 2026-10-14
+
+### Added
+
+- The chat now says which machine its settings come from. Under Remote-SSH,
+  WSL or a container that is the box on the other end, and it is not guessable:
+  the model list, the agents and the config directory all belong to the remote
+  host, not to the machine the window is on. The **more** menu reports the host,
+  the `opencode` version, the binary that answered, where that install keeps
+  its config, how many models it offers and how many config sources it loaded.
+- The machine the agent runs on is asked for its own OpenCode settings, with
+  the same binary and environment the agent was started with: `opencode debug
+  paths`, `opencode debug config` (including a project `opencode.json`),
+  `opencode models` and `opencode debug agents`. Over SSH this is what the
+  remote server has configured. It is read in the background, so it never
+  delays the first prompt, and a machine that answers nothing reports less.
+- A session that offers no model list of its own now falls back to the models
+  that machine reports, instead of leaving the picker reading *Agent did not
+  offer any models*. The list says which host it came from, and a pick the
+  session refuses is reported rather than silently ignored.
 - The last model you picked is remembered and restored on every new chat, the way
   the TUI does. `opencode acp` starts each session on its own default
   (`opencode/cat-jam-free` unless `opencode.json` pins one) and never reads the
