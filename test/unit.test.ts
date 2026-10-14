@@ -8,7 +8,8 @@ import { diffLines } from "../webview/diff.js";
 import { escapeHtml, highlight, renderMarkdown, sanitizeUrl } from "../webview/markdown.js";
 import { modelLabel, modelName } from "../src/shared/model-name.js";
 import { modelToRestore } from "../src/session/model-memory.js";
-import { compactNumber, contextRatio, formatPercent, isPersistable, isUsage, mergeUsage, meterLevel } from "../src/shared/usage.js";
+import { candidatePaths, expandHome, isPathLike, parseProbe, probeScript, shellProbes, shellQuote } from "../src/shared/binary.js";
+import { compactNumber, contextRatio, formatPercent, isPersistable, isUsage, mergeUsage, meterLevel, rememberUsage, usageMemory, usageStore, usageToSeed } from "../src/shared/usage.js";
 import type { Block, ChatItem, ConfigOptionView, PermissionRequest } from "../src/shared/protocol.js";
 
 /* ------------------------------------------------------------------ */
@@ -385,6 +386,25 @@ test("only a reading with a known window is worth carrying over", () => {
   assert.equal(isPersistable(undefined), false);
 });
 
+test("a resumed chat is seeded with the reading it ended on", () => {
+  const remembered = { used: 48_000, size: 200_000 };
+  assert.deepEqual(usageToSeed(remembered, true), remembered);
+});
+
+test("a new chat is not seeded with the previous one's context", () => {
+  // The counter carried over from the last conversation, so "New Chat" opened
+  // showing usage the fresh session had never incurred.
+  assert.equal(usageToSeed({ used: 48_000, size: 200_000 }, false), undefined);
+});
+
+test("seeding a new chat still honours the known-window rule", () => {
+  // `isPersistable` has to keep applying on the resume path after the new-chat
+  // path starts refusing readings outright.
+  assert.equal(usageToSeed({ used: 48_000, size: 0 }, true), undefined);
+  assert.equal(usageToSeed(undefined, true), undefined);
+  assert.equal(usageToSeed(undefined, false), undefined);
+});
+
 test("a stored reading is checked before it reaches the meter", () => {
   // `globalState` is JSON, so anything can come back out of it.
   assert.equal(isUsage({ used: 48_000, size: 200_000 }), true);
@@ -396,6 +416,84 @@ test("a stored reading is checked before it reaches the meter", () => {
   assert.equal(isUsage(undefined), false);
   assert.equal(isUsage("200k"), false);
 });
+
+test("each session keeps its own reading", () => {
+  // One stored figure shared by every chat is what put the previous
+  // conversation's context on the meter of whatever was opened next.
+  const memory = memoryOver();
+  memory.write("ses_a", { used: 48_000, size: 200_000 });
+  memory.write("ses_b", { used: 3_000, size: 1_048_576 });
+
+  assert.deepEqual(memory.read("ses_a"), { used: 48_000, size: 200_000 });
+  assert.deepEqual(memory.read("ses_b"), { used: 3_000, size: 1_048_576 });
+  assert.equal(memory.read("ses_c"), undefined);
+});
+
+test("reopening a session seeds the reading that session ended on", () => {
+  const memory = memoryOver();
+  memory.write("ses_a", { used: 48_000, size: 200_000 });
+  memory.write("ses_b", { used: 3_000, size: 1_048_576 });
+
+  assert.deepEqual(usageToSeed(memory.read("ses_a"), true), { used: 48_000, size: 200_000 });
+  // A chat opened from the history list is a different conversation, so it
+  // starts from nothing rather than from whoever streamed last.
+  assert.equal(usageToSeed(memory.read("ses_c"), true), undefined);
+});
+
+test("the store forgets the least recently written sessions", () => {
+  let store = usageStore({});
+  for (let index = 0; index < 12; index += 1) {
+    store = rememberUsage(store, `ses_${index}`, { used: index, size: 100 });
+  }
+  // The newest ten survive; a re-read of an old session pushes it back in.
+  assert.deepEqual(Object.keys(store), [
+    "ses_11",
+    "ses_10",
+    "ses_9",
+    "ses_8",
+    "ses_7",
+    "ses_6",
+    "ses_5",
+    "ses_4",
+    "ses_3",
+    "ses_2",
+  ]);
+
+  const refreshed = rememberUsage(store, "ses_5", { used: 500, size: 100 });
+  assert.deepEqual(Object.keys(refreshed), [
+    "ses_5",
+    "ses_11",
+    "ses_10",
+    "ses_9",
+    "ses_8",
+    "ses_7",
+    "ses_6",
+    "ses_4",
+    "ses_3",
+    "ses_2",
+  ]);
+});
+
+test("a store that is not a store is read as empty", () => {
+  // Older builds kept a single bare reading under this key. Its fields are not
+  // readings, so none of them may be mistaken for a session's figures.
+  assert.deepEqual(usageStore({ used: 48_000, size: 200_000 }), {});
+  assert.deepEqual(usageStore({ ses_a: { used: "48000", size: 200_000 } }), {});
+  assert.deepEqual(usageStore([{ used: 48_000, size: 200_000 }]), {});
+  assert.deepEqual(usageStore(null), {});
+  assert.deepEqual(usageStore("200k"), {});
+});
+
+/** An in-memory memory, the way the host wires one up over `globalState`. */
+function memoryOver(): ReturnType<typeof usageMemory> {
+  let backing: unknown;
+  return usageMemory(
+    () => backing,
+    (store) => {
+      backing = store;
+    },
+  );
+}
 
 /* ------------------------------------------------------------------ */
 /* Remembered model                                                     */
@@ -513,6 +611,126 @@ test("a _custom companion attaches to its select", () => {
   assert.equal(fields[0].control, "select");
   assert.equal(fields[0].customKey, "pm_custom");
   assert.equal(fields.length, 1);
+});
+
+/* ------------------------------------------------------------------ */
+/* Remote binary resolution                                             */
+/* ------------------------------------------------------------------ */
+
+test("a bare name is resolved, a path is taken as the user's decision", () => {
+  // Under Remote-SSH the extension host's PATH never saw the user's profile,
+  // so `opencode` alone can be a name nothing on the box answers to. A path is
+  // the opposite: the user pointed at a file, and quietly running some other
+  // `opencode` instead would be worse than an error.
+  assert.equal(isPathLike("opencode"), false);
+  assert.equal(isPathLike("/home/me/.opencode/bin/opencode"), true);
+  assert.equal(isPathLike("./bin/opencode"), true);
+  assert.equal(isPathLike("C:\\tools\\opencode.exe"), true);
+});
+
+test("a leading ~ is expanded, because spawn runs no shell", () => {
+  assert.equal(expandHome("~/bin/opencode", "/home/me"), "/home/me/bin/opencode");
+  assert.equal(expandHome("~", "/home/me"), "/home/me");
+  assert.equal(expandHome("/usr/bin/opencode", "/home/me"), "/usr/bin/opencode");
+  assert.equal(expandHome("~other/bin/opencode", "/home/me"), "~other/bin/opencode");
+  assert.equal(expandHome("~/bin/opencode", undefined), "~/bin/opencode");
+});
+
+test("the probe asks for the binary and the PATH together", () => {
+  // The PATH matters as much as the binary: every command the agent runs
+  // afterwards inherits it, so an agent started on the extension host's bare
+  // PATH cannot find git or node either.
+  const script = probeScript("opencode");
+  assert.match(script, /printf 'OC_PATH=%s\\n' "\$PATH"/);
+  assert.match(script, /command -v 'opencode'/);
+});
+
+test("a configured name cannot smuggle shell syntax into the probe", () => {
+  // `opencode.binaryPath` is user input that ends up in a script this code
+  // assembles, so it is quoted for the shell rather than trusted.
+  assert.equal(shellQuote("opencode"), "'opencode'");
+  assert.equal(shellQuote("opencode; rm -rf /"), "'opencode; rm -rf /'");
+  assert.equal(shellQuote("it's"), `'it'\\''s'`);
+});
+
+test("a probe answer is read out of whatever the shell printed as well", () => {
+  // An interactive login shell is entitled to greet you and complain about
+  // job control on the way past; the markers are what identify the answers.
+  const noisy = [
+    "bash: cannot set terminal process group (-1): Inappropriate ioctl for device",
+    "bash: no job control in this shell",
+    "OC_PATH=/usr/bin:/home/me/.opencode/bin:/home/me/.local/bin",
+    "OC_BIN=/home/me/.opencode/bin/opencode",
+    "welcome to ubuntu 24.04",
+  ].join("\n");
+
+  assert.deepEqual(parseProbe(noisy), {
+    envPath: "/usr/bin:/home/me/.opencode/bin:/home/me/.local/bin",
+    binary: "/home/me/.opencode/bin/opencode",
+  });
+});
+
+test("a shell function or alias is not a binary to spawn", () => {
+  // `command -v` answers with those too, and neither is something a child
+  // process can be started with.
+  const alias = "OC_PATH=/usr/bin\nOC_BIN=opencode\n";
+  assert.deepEqual(parseProbe(alias), { envPath: "/usr/bin", binary: undefined });
+});
+
+test("a shell that found nothing yields no binary", () => {
+  assert.deepEqual(parseProbe("OC_PATH=/usr/bin\nOC_BIN=\n"), {
+    envPath: "/usr/bin",
+    binary: undefined,
+  });
+  assert.deepEqual(parseProbe(""), { envPath: undefined, binary: undefined });
+});
+
+test("the user's shell is asked first, and sh last without interactivity", () => {
+  // `-i` is what gets `~/.opencode/bin`, because the standard `~/.bashrc`
+  // returns early for a non-interactive shell. `sh` has no rc files worth that
+  // risk, so it is asked plainly.
+  const probes = shellProbes("opencode", { SHELL: "/usr/bin/fish" });
+  assert.deepEqual(probes[0], {
+    shell: "/usr/bin/fish",
+    args: ["-l", "-i", "-c", probeScript("opencode")],
+  });
+  assert.deepEqual(probes.at(-1), {
+    shell: "/bin/sh",
+    args: ["-l", "-c", probeScript("opencode")],
+  });
+  assert.deepEqual(
+    probes.map((probe) => probe.shell),
+    ["/usr/bin/fish", "/bin/bash", "/bin/zsh", "/bin/sh"],
+  );
+});
+
+test("a shell is only asked once", () => {
+  // `$SHELL` is usually one of the fallbacks, and each extra probe is another
+  // login shell the user waits through.
+  const probes = shellProbes("opencode", { SHELL: "/bin/bash" });
+  assert.deepEqual(
+    probes.map((probe) => probe.shell),
+    ["/bin/bash", "/bin/zsh", "/bin/sh"],
+  );
+});
+
+test("the install directories are searched in the order a user would guess", () => {
+  assert.deepEqual(candidatePaths("opencode", "/home/me"), [
+    "/home/me/.opencode/bin/opencode",
+    "/home/me/.local/bin/opencode",
+    "/home/me/.bun/bin/opencode",
+    "/usr/local/bin/opencode",
+  ]);
+});
+
+test("a login shell's PATH widens the search before the guesses do", () => {
+  // A shell that started but could not answer still tells us what it would have
+  // put on the PATH, which is where nvm's and homebrew's binaries are.
+  const candidates = candidatePaths("opencode", "/home/me", "/usr/bin:/home/me/.nvm/versions/node/v22.0.0/bin");
+  assert.equal(candidates[0], "/usr/bin/opencode");
+  assert.equal(candidates[1], "/home/me/.nvm/versions/node/v22.0.0/bin/opencode");
+  assert.equal(candidates.at(-1), "/usr/local/bin/opencode");
+  assert.equal(candidatePaths("opencode", undefined).at(-1), "/usr/local/bin/opencode");
 });
 
 /* ------------------------------------------------------------------ */

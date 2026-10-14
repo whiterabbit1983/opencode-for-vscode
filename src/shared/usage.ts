@@ -20,17 +20,21 @@ export interface Usage {
 }
 
 /**
- * Remembers the last context reading so an idle chat is not left blank.
+ * Remembers what each session last reported so an idle chat is not left blank.
  *
  * `session/new` and `session/load` both answer without a usage field, so
  * without this the counter sits empty for the whole of a reopened
  * conversation and only reappears once a turn is streaming. The figures are
  * carried over rather than recomputed, which means they are the reading from
  * the end of the last turn until the next `usage_update` replaces them.
+ *
+ * Keyed by session id because a reading belongs to the conversation that
+ * produced it: one stored figure shared by every chat is how a resumed chat
+ * ends up advertising another one's context.
  */
 export interface UsageMemory {
-  read(): Usage | undefined;
-  write(usage: Usage): void;
+  read(sessionId: string): Usage | undefined;
+  write(sessionId: string, usage: Usage): void;
 }
 
 const NO_USAGE_MEMORY: UsageMemory = {
@@ -43,8 +47,81 @@ export function noUsageMemory(): UsageMemory {
   return NO_USAGE_MEMORY;
 }
 
+/** The persisted shape: one reading per session. */
+export type UsageStore = Record<string, Usage>;
+
 /**
- * Whether a reading is worth carrying into the next session.
+ * How many sessions' readings are kept.
+ *
+ * Only the sessions the user actually reopens need one, and the store is
+ * user-wide state that is never pruned otherwise, so it is capped rather than
+ * grown forever.
+ */
+const STORE_LIMIT = 10;
+
+/**
+ * Reads the store back out of JSON, dropping anything that is not a reading.
+ *
+ * Both keys and values come from disk, so a hand-edited, truncated or
+ * out-of-date entry must not reach the meter as `NaN` or as another session's
+ * figures.
+ */
+export function usageStore(value: unknown): UsageStore {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return {};
+  }
+  const store: UsageStore = {};
+  for (const [sessionId, reading] of Object.entries(value as Record<string, unknown>)) {
+    if (isUsage(reading)) {
+      store[sessionId] = reading;
+    }
+  }
+  return store;
+}
+
+/**
+ * Stores a reading for one session, forgetting the least recently written.
+ *
+ * The session being written goes first so the key order doubles as a recency
+ * order, which is what the cap below trims on.
+ */
+export function rememberUsage(store: UsageStore, sessionId: string, usage: Usage): UsageStore {
+  const next: UsageStore = { [sessionId]: usage };
+  let kept = 1;
+  for (const [id, reading] of Object.entries(store)) {
+    if (id === sessionId) {
+      continue;
+    }
+    if (kept >= STORE_LIMIT) {
+      break;
+    }
+    next[id] = reading;
+    kept += 1;
+  }
+  return next;
+}
+
+/**
+ * A memory over a store the host keeps as JSON, parsed once per window.
+ *
+ * A turn streams a `usage_update` per chunk, so re-reading and re-validating
+ * the whole store on every write would be wasted work; nothing else writes the
+ * key, so the parse is kept.
+ */
+export function usageMemory(load: () => unknown, save: (store: UsageStore) => void): UsageMemory {
+  let parsed: UsageStore | undefined;
+  const store = (): UsageStore => (parsed ??= usageStore(load()));
+  return {
+    read: (sessionId) => store()[sessionId],
+    write: (sessionId, usage) => {
+      parsed = rememberUsage(store(), sessionId, usage);
+      save(parsed);
+    },
+  };
+}
+
+/**
+ * Whether a reading is worth remembering for the next time this session opens.
  *
  * Only a reading with a known window qualifies: a `size` of zero means the
  * figure was a bare session total, which is not a share of anything and would
@@ -52,6 +129,23 @@ export function noUsageMemory(): UsageMemory {
  */
 export function isPersistable(usage: Usage | undefined): usage is Usage {
   return !!usage && usage.size > 0;
+}
+
+/**
+ * The reading to put on the meter when a session opens.
+ *
+ * `remembered` is already this session's own last reading — see
+ * {@link UsageMemory} — so the only question left is whether this session had
+ * a context at all. A resumed one still holds whatever it ended on, and those
+ * figures are honest until the next `usage_update`. A brand-new session holds
+ * none: its context window is empty, and putting a count on it makes a fresh
+ * conversation advertise usage it never had.
+ *
+ * Returning `undefined` leaves the meter blank, which is the accurate reading
+ * — the first `usage_update` of the new turn fills it in.
+ */
+export function usageToSeed(remembered: Usage | undefined, resumed: boolean): Usage | undefined {
+  return resumed && isPersistable(remembered) ? remembered : undefined;
 }
 
 /**

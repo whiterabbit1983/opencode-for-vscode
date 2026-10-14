@@ -33,7 +33,7 @@ import type {
   SessionSummary,
 } from "../shared/protocol.js";
 import { modelName } from "../shared/model-name.js";
-import { isPersistable, mergeUsage, noUsageMemory, type Usage, type UsageMemory } from "../shared/usage.js";
+import { isPersistable, mergeUsage, noUsageMemory, usageToSeed, type Usage, type UsageMemory } from "../shared/usage.js";
 import { modelToRestore, noModelMemory, type ModelMemory } from "./model-memory.js";
 import { chooseAutomatically, destructiveReason, sliceLines, toFormFields } from "./policy.js";
 import { isReadOnlyTool, Thread, toBlock } from "./thread.js";
@@ -259,6 +259,9 @@ export class ChatSession implements vscode.Disposable {
     this.configOptions = [];
     this.commands = undefined;
     this.sessionTitle = undefined;
+    // The dedupe guard belongs to the session that is being replaced: a fresh
+    // session must write its own first reading even if it happens to match.
+    this.persistedUsage = undefined;
     this.emitTranscript();
 
     const response = await this.agent.newSession(cwd);
@@ -266,7 +269,10 @@ export class ChatSession implements vscode.Disposable {
     this.cwd = cwd;
     this.modes = toModes(response.modes);
     this.configOptions = toConfigOptions(response.configOptions);
-    this.seedUsage();
+    // `false`: this conversation is empty, so the meter stays empty. `thread.reset()`
+    // above already cleared it; saying so explicitly is what keeps the previous
+    // chat's token count from reappearing here.
+    this.seedUsage(false);
     await this.applyRememberedModel();
     this.emitTranscript();
   }
@@ -288,25 +294,37 @@ export class ChatSession implements vscode.Disposable {
   }
 
   /**
-   * Puts the last known context reading back on the status bar.
+   * Puts this session's last known context reading back on the status bar.
    *
-   * Neither `session/new` nor `session/load` reports usage, so a chat opened
+   * Neither `session/new` nor `session/load` reports usage, so a resumed chat
    * at rest would otherwise show nothing at all until a turn streamed an
    * update. The figures are deliberately not marked as live: the next
-   * `usage_update` overwrites them, and until then they are the honest
-   * "as of the end of the last turn" reading.
+   * `usage_update` overwrites them, and until then they are the honest "as of
+   * the end of the last turn" reading.
+   *
+   * The memory is keyed by session id, so what comes back is this session's own
+   * history — opening a chat from the history list cannot put another
+   * conversation's context on the meter.
+   *
+   * `resumed` is what separates reopening a conversation from starting one —
+   * see {@link usageToSeed}, which is where the decision is made.
    */
-  private seedUsage(): void {
-    const remembered = this.usageMemory.read();
-    if (!isPersistable(remembered)) {
+  private seedUsage(resumed: boolean): void {
+    const sessionId = this.sessionId;
+    if (!sessionId) {
       return;
     }
-    this.thread.usage = remembered;
-    this.persistedUsage = remembered;
+    const seeded = usageToSeed(this.usageMemory.read(sessionId), resumed);
+    if (!seeded) {
+      return;
+    }
+    this.thread.usage = seeded;
+    this.persistedUsage = seeded;
   }
 
   /**
-   * Writes the reading out so the next chat has something to seed from.
+   * Writes the reading out so the next visit to this session has something to
+   * seed from.
    *
    * Guarded on identity because a turn streams a `usage_update` per chunk, and
    * `usage_update` is the only place cost arrives, so most of them would be
@@ -314,11 +332,12 @@ export class ChatSession implements vscode.Disposable {
    */
   private persistUsage(): void {
     const usage = this.thread.usage;
-    if (!isPersistable(usage) || usage === this.persistedUsage) {
+    const sessionId = this.sessionId;
+    if (!sessionId || !isPersistable(usage) || usage === this.persistedUsage) {
       return;
     }
     this.persistedUsage = usage;
-    this.usageMemory.write(usage);
+    this.usageMemory.write(sessionId, usage);
   }
 
   /** The reading last written out, so an unchanged one is not rewritten. */
@@ -351,9 +370,11 @@ export class ChatSession implements vscode.Disposable {
     this.configOptions = [];
     this.commands = undefined;
     this.sessionTitle = undefined;
+    this.persistedUsage = undefined;
     this.sessionId = sessionId;
     this.cwd = cwd;
-    this.seedUsage();
+    // `true`: a resumed session still holds the context it ended on.
+    this.seedUsage(true);
     this.emitTranscript();
 
     try {

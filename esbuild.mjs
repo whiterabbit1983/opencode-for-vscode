@@ -61,6 +61,16 @@ if (!process.argv.includes("--production")) {
       format: "cjs",
       external: ["vscode"],
     },
+    {
+      ...common,
+      entryPoints: ["test/startup.test.ts"],
+      outfile: "dist/test/startup.test.js",
+      platform: "node",
+      format: "cjs",
+      // Drives the real `OpenCodeAgent`, so it needs the same stub the smoke
+      // test uses rather than a missing `vscode` at require time.
+      alias: { vscode: "./test/vscode-stub.ts" },
+    },
   );
 }
 

@@ -1,4 +1,6 @@
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { spawn, type ChildProcess, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { statSync } from "node:fs";
+import { homedir } from "node:os";
 import { Readable, Writable } from "node:stream";
 
 import {
@@ -33,8 +35,17 @@ import {
   type WriteTextFileRequest,
 } from "@agentclientprotocol/sdk";
 
-import { hostLabel, readSettings } from "../config.js";
+import { hostLabel, readSettings, type OpenCodeSettings } from "../config.js";
 import { describeError, log } from "../logger.js";
+import {
+  candidatePaths,
+  expandHome,
+  isPathLike,
+  parseProbe,
+  shellProbes,
+  type ProbeResult,
+  type ShellProbe,
+} from "../shared/binary.js";
 import { EXTENSION_VERSION } from "../version.js";
 
 /** Callbacks the UI layer implements. Everything ACP-specific is funnelled here. */
@@ -55,6 +66,15 @@ export function isTerminalAuthMethod(
 }
 
 export type AgentStatus = "stopped" | "starting" | "ready" | "error";
+
+/**
+ * A started agent and the executable behind it.
+ *
+ * The binary is carried out of {@link OpenCodeAgent.launch} because it is not
+ * always the one that was configured: a bare name can be resolved to a path, and
+ * an error about "the agent died" has to name the file that actually died.
+ */
+type Launched = { child: ChildProcessWithoutNullStreams; binary: string };
 
 export class AgentError extends Error {
   constructor(
@@ -78,6 +98,35 @@ const HANDSHAKE_TIMEOUT_MS = 30_000;
 
 /** How long session bookkeeping calls (new/list/delete/resume) may take. */
 const SESSION_TIMEOUT_MS = 20_000;
+
+/**
+ * How long one login-shell probe may take before it is abandoned.
+ *
+ * A profile that reaches for the network, or an rc file that prompts, can hang,
+ * and a hung shell must never become a hung extension host.
+ */
+const LOGIN_SHELL_TIMEOUT_MS = 5_000;
+
+/**
+ * How long to wait for a process's death once its connection has already
+ * closed.
+ *
+ * The exit follows the close within a tick or two. Anything longer than that is
+ * a process that shut its streams and stayed alive, and there the transport's
+ * word is the best one available.
+ */
+const DEATH_GRACE_MS = 1_000;
+
+/**
+ * Resolves with `undefined` after `ms`, for giving up on something without
+ * rejecting because it did not happen.
+ */
+function settleAfter(ms: number): Promise<undefined> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(undefined), ms);
+    timer.unref?.();
+  });
+}
 
 /**
  * Rejects with `message` if `promise` has not settled within `timeoutMs`.
@@ -155,6 +204,13 @@ export class OpenCodeAgent {
 
   private statusListeners: Array<(status: AgentStatus, detail?: string) => void> = [];
 
+  /**
+   * What the last successful launch actually ran, so a restart does not pay for
+   * the discovery again. Keyed by what the user configured: change
+   * `opencode.binaryPath` and the entry no longer applies.
+   */
+  private resolved?: { requested: string; binary: string; envPath?: string };
+
   /* ---------------------------------------------------------------- */
   /* Lifecycle                                                         */
   /* ---------------------------------------------------------------- */
@@ -176,17 +232,20 @@ export class OpenCodeAgent {
     const settings = readSettings();
     const args = [...settings.extraArgs, "acp"];
 
-    let child: ChildProcessWithoutNullStreams;
+    // A child that never spawns reports `error` asynchronously, so the spawn is
+    // awaited rather than assumed. It has to be: without that a missing binary
+    // produced no error at all — the handshake went unanswered, and the teardown
+    // that followed waited for an `exit` that a child which never spawned
+    // cannot emit, so the panel sat on *starting* forever with the only clue
+    // left in the output channel.
+    let launched: Launched;
     try {
-      child = spawn(settings.binaryPath, args, {
-        stdio: ["pipe", "pipe", "pipe"],
-        env: { ...process.env, ...settings.env },
-        windowsHide: true,
-      });
+      launched = await this.launch(settings, args);
     } catch (error) {
       this.setStatus("error", describeError(error));
-      throw this.wrapStartupError(error);
+      throw error instanceof AgentError ? error : this.wrapStartupError(error);
     }
+    const { child } = launched;
 
     this.child = child;
     this.stderrTail = [];
@@ -230,22 +289,32 @@ export class OpenCodeAgent {
 
     this.connection = this.app.connect(stream);
 
+    // Resolves when the agent is gone, and with what it said on the way out. An
+    // agent that dies while introducing itself never answers, and the reason is
+    // in its last words on stderr — which beats a bare "did not answer".
+    const died = this.whenItDies(child, launched.binary);
+
     try {
       const response = await withTimeout(
-        this.connection.agent.request(AGENT_METHODS.initialize, {
-          protocolVersion: PROTOCOL_VERSION,
-          clientInfo: { name: "opencode-vscode", version: EXTENSION_VERSION, title: "OpenCode for VS Code" },
-          clientCapabilities: {
-            // Terminals are deliberately not advertised: OpenCode runs its own
-            // shell tool, so the chat never has to render a console.
-            terminal: false,
-            fs: { readTextFile: true, writeTextFile: true },
-            session: { compaction: {}, configOptions: {}, notices: {} },
-            auth: { terminal: true },
-            elicitation: { form: {} },
-            _meta: { "terminal-auth": true },
-          },
-        }),
+        Promise.race([
+          this.connection.agent.request(AGENT_METHODS.initialize, {
+            protocolVersion: PROTOCOL_VERSION,
+            clientInfo: { name: "opencode-vscode", version: EXTENSION_VERSION, title: "OpenCode for VS Code" },
+            clientCapabilities: {
+              // Terminals are deliberately not advertised: OpenCode runs its own
+              // shell tool, so the chat never has to render a console.
+              terminal: false,
+              fs: { readTextFile: true, writeTextFile: true },
+              session: { compaction: {}, configOptions: {}, notices: {} },
+              auth: { terminal: true },
+              elicitation: { form: {} },
+              _meta: { "terminal-auth": true },
+            },
+          }),
+          died.then((reason) => {
+            throw reason;
+          }),
+        ]),
         HANDSHAKE_TIMEOUT_MS,
         `OpenCode did not answer \`initialize\` within ${HANDSHAKE_TIMEOUT_MS / 1000}s.`,
       );
@@ -264,11 +333,251 @@ export class OpenCodeAgent {
       this.setStatus("ready");
       log.info("connected to opencode %s (protocol v%s)", this.agentInfo?.version ?? "?", this.protocolVersion);
     } catch (error) {
+      const reason = await this.reasonForStartupFailure(error, died);
       await this.terminateChild();
-      const message = describeError(error);
+      const message = describeError(reason);
       this.setStatus("error", message);
-      throw this.wrapStartupError(error, message);
+      throw this.wrapStartupError(reason, message);
     }
+  }
+
+  /**
+   * Settles when the agent is gone, with the reason.
+   *
+   * Two things can end a startup: the process dying, and the transport noticing
+   * that the connection closed. They are the same event seen from two sides, and
+   * the transport loses the information — it can only say "closed". So the death
+   * is waited out before the transport's word becomes the error the user sees.
+   */
+  private async reasonForStartupFailure(error: unknown, died: Promise<AgentError>): Promise<unknown> {
+    // Anything other than a closed connection is the agent's own answer and is
+    // more specific than a process exit would be.
+    if (!/closed/i.test(describeError(error))) {
+      return error;
+    }
+    const reason = await Promise.race([died, settleAfter(DEATH_GRACE_MS)]);
+    return reason ?? error;
+  }
+
+  /** Resolves once the child has died, with why. Never rejects. */
+  private whenItDies(child: ChildProcess, binary: string): Promise<AgentError> {
+    return new Promise<AgentError>((resolve) => {
+      child.once("error", (error) => {
+        resolve(this.wrapStartupError(error));
+      });
+      child.once("exit", (code, signal) => {
+        resolve(new AgentError(exitDetail(binary, code, signal, this.lastStderrLine())));
+      });
+    });
+  }
+
+  /* ---------------------------------------------------------------- */
+  /* Starting the agent                                                */
+  /* ---------------------------------------------------------------- */
+
+  /**
+   * Starts `opencode acp`, resolving a bare command name first if the host's
+   * `PATH` cannot see it.
+   *
+   * Under Remote-SSH this is the difference between working and a dead chat.
+   * The VS Code server is launched by a non-interactive SSH command, so the
+   * extension host's `PATH` has never seen the user's profile: `~/.opencode/bin`,
+   * `~/.local/bin` and nvm's shims are all missing from it, and `opencode` looks
+   * uninstalled on a box where it is installed. So a name that fails to spawn is
+   * asked about in a login shell, and the agent is then started with both the
+   * binary that shell reported and the `PATH` it would have given a terminal —
+   * so the commands the agent runs afterwards can find `git`, `node` and the
+   * rest.
+   *
+   * A configured *path* is never second-guessed. The user pointed at a file;
+   * running some other `opencode` instead would be worse than an error.
+   */
+  private async launch(settings: OpenCodeSettings, args: string[]): Promise<Launched> {
+    const remembered = this.resolved;
+    if (remembered?.requested === settings.binaryPath) {
+      try {
+        const child = await this.spawnChild(remembered.binary, args, this.childEnv(settings, remembered.envPath));
+        return { child, binary: remembered.binary };
+      } catch (error) {
+        // Whatever it found last time is gone or no longer runnable; fall
+        // through and look again rather than repeating a failure.
+        log.warn("remembered binary %s no longer starts: %s", remembered.binary, describeError(error));
+        this.resolved = undefined;
+      }
+    }
+
+    const binary = expandHome(settings.binaryPath, homedir());
+    try {
+      const child = await this.spawnChild(binary, args, this.childEnv(settings));
+      this.resolved = undefined;
+      return { child, binary };
+    } catch (error) {
+      if (!isNotFound(error)) {
+        throw error;
+      }
+    }
+
+    const found = await this.discover(settings.binaryPath);
+    if (!found) {
+      throw this.missingBinary(settings.binaryPath);
+    }
+
+    log.info("resolved `%s` to %s on %s", settings.binaryPath, found.binary, hostLabel());
+    const child = await this.spawnChild(found.binary, args, this.childEnv(settings, found.envPath));
+    this.resolved = { requested: settings.binaryPath, binary: found.binary, envPath: found.envPath };
+    return { child, binary: found.binary };
+  }
+
+  /**
+   * The environment the agent is started with.
+   *
+   * A discovered login-shell `PATH` sits underneath `opencode.env` rather than
+   * over it: a `PATH` the user set by hand is a decision, not a default.
+   */
+  private childEnv(settings: OpenCodeSettings, envPath?: string): NodeJS.ProcessEnv {
+    return {
+      ...process.env,
+      ...(envPath ? { PATH: envPath } : {}),
+      ...settings.env,
+    };
+  }
+
+  private spawnChild(binary: string, args: string[], env: NodeJS.ProcessEnv): Promise<ChildProcessWithoutNullStreams> {
+    return new Promise<ChildProcessWithoutNullStreams>((resolve, reject) => {
+      let child: ChildProcessWithoutNullStreams;
+      try {
+        child = spawn(binary, args, {
+          stdio: ["pipe", "pipe", "pipe"],
+          env,
+          windowsHide: true,
+        });
+      } catch (error) {
+        reject(error);
+        return;
+      }
+      // `spawn` reports a binary it cannot execute asynchronously, on `error`.
+      // `spawn` itself is the only signal that it worked, and waiting for it is
+      // what turns "the executable is missing" into a catchable failure here
+      // instead of an unanswered handshake thirty seconds later.
+      child.once("spawn", () => resolve(child));
+      child.once("error", reject);
+    });
+  }
+
+  /**
+   * Asks the host's login shells where a bare command name lives.
+   *
+   * Each shell is tried in turn and the first answer wins. If none of them
+   * reports the binary, the directories they would have had it in are checked
+   * directly — a shell that fails to start still leaves a usable `PATH` behind
+   * in the common case where the extension host itself carries one.
+   */
+  private async discover(name: string): Promise<{ binary: string; envPath?: string } | undefined> {
+    // Windows resolves names through `PATHEXT`, and there is no login shell to
+    // ask; a name that did not spawn there is simply not installed.
+    if (process.platform === "win32" || isPathLike(name)) {
+      return undefined;
+    }
+
+    let envPath: string | undefined;
+    for (const probe of shellProbes(name)) {
+      const result = await this.probeShell(probe);
+      envPath = envPath ?? result.envPath;
+      log.debug("login shell %s answered: %s", probe.shell, result.binary ?? "no binary");
+      if (result.binary) {
+        return { binary: result.binary, envPath: result.envPath ?? envPath };
+      }
+    }
+
+    const home = homedir();
+    for (const candidate of candidatePaths(name, home, envPath)) {
+      if (isExecutable(candidate)) {
+        log.info("found `%s` at %s on %s", name, candidate, hostLabel());
+        return { binary: candidate, envPath };
+      }
+    }
+    return undefined;
+  }
+
+  /** Runs one login-shell probe, giving up rather than hanging on a bad rc file. */
+  private probeShell(probe: ShellProbe): Promise<ProbeResult> {
+    return new Promise<ProbeResult>((resolve) => {
+      let settled = false;
+      const finish = (result: ProbeResult) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        clearTimeout(timer);
+        resolve(result);
+      };
+
+      let child: ChildProcess;
+      try {
+        child = spawn(probe.shell, probe.args, {
+          // stdin is closed so an rc file that prompts cannot sit here waiting
+          // for an answer that will never come.
+          stdio: ["ignore", "pipe", "ignore"],
+          env: process.env,
+          windowsHide: true,
+        });
+      } catch (error) {
+        log.debug("login shell %s could not start: %s", probe.shell, describeError(error));
+        resolve({});
+        return;
+      }
+
+      let stdout = "";
+      child.stdout?.setEncoding("utf8");
+      child.stdout?.on("data", (chunk: string) => {
+        stdout += chunk;
+      });
+      child.once("error", (error) => {
+        log.debug("login shell %s failed: %s", probe.shell, describeError(error));
+        finish({});
+      });
+      child.once("close", () => finish(parseProbe(stdout)));
+
+      const timer = setTimeout(() => {
+        log.warn("login shell %s did not answer in %ss; giving up on it", probe.shell, LOGIN_SHELL_TIMEOUT_MS / 1000);
+        child.kill("SIGKILL");
+        finish({});
+      }, LOGIN_SHELL_TIMEOUT_MS);
+      timer.unref?.();
+    });
+  }
+
+  private lastStderrLine(): string | undefined {
+    return this.stderrTail[this.stderrTail.length - 1];
+  }
+
+  /**
+   * The message for a binary that could not be run.
+   *
+   * It has to name the host, because the `which opencode` that would fix this
+   * is the one run *on that host* — a local shell finds a different answer, or
+   * none at all.
+   *
+   * The two cases get different advice on purpose. A bare name that nothing
+   * found is an installation question; a path that will not run is a typo or a
+   * permission bit, and telling someone to make their absolute path absolute
+   * again is noise.
+   */
+  private missingBinary(configured: string): AgentError {
+    const where = hostLabel();
+    if (isPathLike(configured)) {
+      return new AgentError(
+        `\`${configured}\` cannot be run on ${where}. Check that the file exists and is executable ` +
+          `there — the extension host may not see what your login shell does — or point ` +
+          `\`opencode.binaryPath\` at where OpenCode is installed on ${where}.`,
+      );
+    }
+    return new AgentError(
+      `Could not run \`${configured}\` on ${where}, and no login shell there has it either. ` +
+        `Install OpenCode on ${where}, or set \`opencode.binaryPath\` to its absolute path in the ` +
+        `Remote scope for this host — run \`which ${configured}\` in a VS Code terminal on ${where} ` +
+        `to find it.`,
+    );
   }
 
   private onStderr(chunk: string): void {
@@ -289,10 +598,7 @@ export class OpenCodeAgent {
     if (this.disposed) {
       return;
     }
-    const detail =
-      code === 0
-        ? undefined
-        : `opencode exited with ${signal ? `signal ${signal}` : `code ${code}`}${this.stderrTail.length ? `: ${this.stderrTail[this.stderrTail.length - 1]}` : ""}`;
+    const detail = code === 0 ? undefined : exitDetail("opencode", code, signal, this.lastStderrLine());
     this.child = undefined;
     this.connection = undefined;
     this.setStatus("error", detail);
@@ -483,11 +789,22 @@ export class OpenCodeAgent {
       return;
     }
     await new Promise<void>((resolve) => {
+      // A child that died during the handshake has already emitted `exit`, so
+      // waiting for another one would wait forever — which is how a failed start
+      // could leave the panel stuck on *starting* with no error. An exit code or
+      // signal on the handle is how Node says it is over.
+      if (child.exitCode !== null || child.signalCode !== null) {
+        resolve();
+        return;
+      }
       const done = () => resolve();
       child.once("exit", done);
       child.stdin.end();
       const timer = setTimeout(() => {
         child.kill("SIGKILL");
+        // Nothing more can be done about a process that will not die, and the
+        // caller is waiting on this to report the failure to the user.
+        resolve();
       }, 2000);
       timer.unref?.();
       child.once("exit", () => clearTimeout(timer));
@@ -499,6 +816,49 @@ export class OpenCodeAgent {
     this.statusListeners = [];
     void this.terminateChild();
   }
+}
+
+/**
+ * How a child process says "there is nothing there to run".
+ *
+ * `ENOENT` is the one that matters on a remote host — that is a binary missing
+ * from a `PATH` that never saw the user's profile. `EACCES` counts too: a
+ * `~/.opencode/bin/opencode` that lost its executable bit is the same problem
+ * wearing a different mask, and the login shell finds it either way.
+ */
+function isNotFound(error: unknown): boolean {
+  const code = (error as { code?: unknown } | undefined)?.code;
+  return code === "ENOENT" || code === "EACCES";
+}
+
+/** Whether a path is a file this process is allowed to execute. */
+function isExecutable(path: string): boolean {
+  try {
+    const { mode } = statSync(path);
+    // The executable bit matters: a candidate that cannot be run would just
+    // fail again with `EACCES`, only now after the login-shell detour.
+    return process.platform === "win32" || (mode & 0o111) !== 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * What a dead agent said on its way out.
+ *
+ * The last line of stderr is kept for exactly this: a binary that starts and
+ * then dies usually says why (a wrong version, a broken install, a missing
+ * shared library) and that is the whole difference between a usable error and
+ * a shrug.
+ */
+function exitDetail(
+  binary: string,
+  code: number | null,
+  signal: NodeJS.Signals | null,
+  lastStderr?: string,
+): string {
+  const how = signal ? `signal ${signal}` : `code ${code}`;
+  return `\`${binary}\` exited with ${how}${lastStderr ? `: ${lastStderr}` : ""}.`;
 }
 
 /**

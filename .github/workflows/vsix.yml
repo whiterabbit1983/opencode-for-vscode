@@ -32,6 +32,11 @@ jobs:
 
       - run: npm ci
 
+      # The agent-startup tests cover the remote-host failures (a `PATH` that
+      # never saw the user's profile, an agent that dies during the handshake),
+      # and the unit tests need no editor or credentials to run.
+      - run: npm test
+
       # Runs vscode:prepublish (the production build) and then packages it.
       # @vscode/vsce is pinned in devDependencies, so local and CI builds
       # use the same version.

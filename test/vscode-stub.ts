@@ -6,7 +6,6 @@
  */
 
 const SETTINGS: Record<string, unknown> = {
-  binaryPath: process.env.OPENCODE_BIN ?? "opencode",
   extraArgs: process.env.OPENCODE_EXTRA_ARGS ? process.env.OPENCODE_EXTRA_ARGS.split(" ") : [],
   env: {},
   permissions: "ask",
@@ -22,7 +21,10 @@ const SETTINGS: Record<string, unknown> = {
 export const workspace = {
   getConfiguration() {
     return {
-      get: (key: string) => SETTINGS[key],
+      // `binaryPath` is read from the environment on every call rather than
+      // captured above, so a test can point the agent at a different executable
+      // partway through a run — which is how the startup failures are exercised.
+      get: (key: string) => (key === "binaryPath" ? (process.env.OPENCODE_BIN ?? "opencode") : SETTINGS[key]),
       has: () => false,
       inspect: () => undefined,
     };

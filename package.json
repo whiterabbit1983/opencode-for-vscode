@@ -174,7 +174,7 @@
         "opencode.binaryPath": {
           "type": "string",
           "default": "opencode",
-          "markdownDescription": "Path to the `opencode` executable. Leave as `opencode` to resolve it from `PATH`. Run `which opencode` to get an absolute path."
+          "markdownDescription": "Path to the `opencode` executable. Leave as `opencode` to resolve it from `PATH`. Over SSH that `PATH` does not include the remote login shell's, so a bare name is resolved by asking the remote login shell instead; run `which opencode` in a VS Code terminal to get the absolute path it reports. On a remote host, set this in the *Remote [SSH: host]* scope."
         },
         "opencode.extraArgs": {
           "type": "array",
@@ -267,7 +267,7 @@
     "package": "node esbuild.mjs --production && npm run assets",
     "compile": "tsc -p tsconfig.json && tsc -p webview/tsconfig.json",
     "lint": "tsc -p tsconfig.json && tsc -p webview/tsconfig.json",
-    "test": "node esbuild.mjs && node --test dist/test/unit.test.js && node scripts/verify-bundle.mjs",
+    "test": "node esbuild.mjs && node --test dist/test/unit.test.js dist/test/startup.test.js && node scripts/verify-bundle.mjs",
     "smoke": "npm run build && node dist/test/smoke.js",
     "preview": "npm run build && node scripts/preview.mjs",
     "icon": "node scripts/make-icon.mjs",

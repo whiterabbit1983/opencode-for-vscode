@@ -31,8 +31,9 @@ All notable changes to this extension are documented here. The format follows
   longer one starting the same, and a shallower path wins a tie.
 - The context meter survives a reload. Neither `session/new` nor `session/load`
   reports usage, so a reopened conversation sat with an empty status bar until
-  a turn streamed an update. The last reading is remembered — global, like the
-  model — and seeded back on every new or resumed chat.
+  a turn streamed an update. Each session's last reading is remembered — keyed by
+  session id, in a store that keeps the ten most recent — and seeded back when
+  that same conversation is reopened.
 
 ### Changed
 
@@ -77,6 +78,31 @@ All notable changes to this extension are documented here. The format follows
 
 ### Fixed
 
+- The chat never started over Remote-SSH, WSL or in a container, and said
+  nothing about why. `spawn` reports a missing executable asynchronously, and
+  the only handler for it wrote a line to the output channel — so the agent's
+  handshake was left waiting on a process that would never answer, and the
+  teardown that followed waited for an `exit` event a child that never spawned
+  cannot emit. The panel sat on *starting* indefinitely. The spawn is now
+  awaited, the handshake is raced against the agent's death, and a binary that
+  cannot be run fails in milliseconds with a message naming the host it was
+  looked for on.
+- `opencode` could not be found on a remote host even though it was installed
+  there. The VS Code server is started by a non-interactive SSH command, so the
+  extension host's `PATH` never went through the user's profile — which is where
+  the installer puts `~/.opencode/bin`, and where nvm keeps its shims. A bare
+  `opencode` that will not spawn is now resolved by asking the host's login
+  shell, and the agent is started with the `PATH` that shell would have given a
+  terminal, so the commands it runs afterwards can find `git` and `node` too. A
+  configured *path* is still used exactly as written rather than silently
+  replaced by a different `opencode`.
+- The context meter showed the previous chat's tokens. A single reading was
+  stored for the whole window and handed to whichever session opened next, so
+  restarting VS Code opened a new conversation already reading `75k / 1.0M` it
+  had never incurred, and reopening a chat from the history list showed
+  whichever conversation streamed last. Readings are stored per session now and
+  only that session's own reading is seeded back; a new chat starts empty until
+  its first turn streams a `usage_update`.
 - The typing indicator stayed on screen after the turn ended. The transcript
   cache keyed an agent message on its text alone, so a message whose only
   change was "no longer streaming" was never redrawn — the dots kept bouncing

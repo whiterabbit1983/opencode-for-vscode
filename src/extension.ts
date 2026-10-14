@@ -1,7 +1,7 @@
 import * as vscode from "vscode";
 
 import { onSettingsChanged, readSettings } from "./config.js";
-import { isUsage } from "./shared/usage.js";
+import { usageMemory } from "./shared/usage.js";
 import { describeError, log } from "./logger.js";
 import { ChatSession } from "./session/chat-session.js";
 import { registerDiffProviders } from "./ui/diff-preview.js";
@@ -15,7 +15,9 @@ const SESSION_KEY = "opencode.lastSession";
 const MODEL_KEY = "opencode.lastModel";
 /**
  * Global for the same reason as the model: the figures belong to a model, not
- * to a folder, so opening another workspace should not blank the counter.
+ * to a folder, so opening another workspace should not blank the counter. The
+ * store is keyed by session id, which is what keeps one chat's context off
+ * another's meter.
  */
 const USAGE_KEY = "opencode.lastUsage";
 
@@ -38,13 +40,10 @@ export function activate(context: vscode.ExtensionContext): void {
       },
       write: (modelId) => void context.globalState.update(MODEL_KEY, modelId),
     },
-    {
-      read: () => {
-        const value = context.globalState.get<unknown>(USAGE_KEY);
-        return isUsage(value) ? value : undefined;
-      },
-      write: (usage) => void context.globalState.update(USAGE_KEY, usage),
-    },
+    usageMemory(
+      () => context.globalState.get<unknown>(USAGE_KEY),
+      (store) => void context.globalState.update(USAGE_KEY, store),
+    ),
   );
 
   view = new ChatViewHost(context.extensionUri, session, diffs, {

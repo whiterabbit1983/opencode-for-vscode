@@ -51,15 +51,19 @@ local one).
 
 Two things are easy to get wrong:
 
-- **Set `binaryPath` for the remote.** Put an absolute path in the
-  *Remote [SSH: your-host]* scope in Settings, not just *User*. A path that
-  works locally will not exist on the remote.
-- **The extension host's `PATH` is not your login shell's.** The VS Code server
-  is started by a non-interactive SSH command, so `~/.opencode/bin`,
-  `~/.local/bin`, and nvm shims are often missing from it. If `binaryPath` is
-  left as `opencode`, run `which opencode` *inside a VS Code terminal* — that
-  terminal inherits the extension host's environment. If it is not found there,
-  set an absolute path.
+- **`binaryPath` defaults to a bare `opencode`, and that is usually enough.**
+  The VS Code server is started by a non-interactive SSH command, so the
+  extension host's `PATH` has never seen your profile — `~/.opencode/bin`,
+  `~/.local/bin` and nvm's shims are all missing from it. When the bare name
+  will not start, the extension asks the remote login shell where `opencode` is
+  and runs that, together with the `PATH` the shell would have given a terminal,
+  so the agent's own commands find `git` and `node` as well. Set an absolute
+  `opencode.binaryPath` in the *Remote [SSH: your-host]* scope if you want to
+  skip the question — a configured path is used exactly as written and never
+  resolved to some other `opencode`.
+- **Install the extension on the remote host.** If the chat reports that it
+  could not run `opencode` at all, check the extension is not only installed
+  locally.
 
 If the agent fails to start, the error names the host it tried to run on.
 
@@ -141,6 +145,10 @@ Press `F5` to launch an Extension Development Host with the extension loaded.
 `npm test` covers the transcript reducer, the line diff, the markdown renderer
 and the permission/form policies, then loads the built bundle against a stubbed
 `vscode` API to confirm every command in `package.json` is actually registered.
+It also starts the agent against stand-in binaries to prove the failures a
+remote host causes — a `PATH` that never saw the user's profile, an executable
+that dies instead of speaking ACP — fail with a usable message instead of
+hanging.
 
 `npm run smoke` spawns the real agent, performs `initialize` and `session/new`,
 sends a prompt, and folds the resulting `session/update` stream through the same
