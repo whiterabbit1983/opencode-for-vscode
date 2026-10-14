@@ -2,7 +2,7 @@
   "name": "opencode-vscode",
   "displayName": "OpenCode",
   "description": "A native-feeling GUI for OpenCode in VS Code, powered by the Agent Client Protocol (ACP). No terminals, no console output — just chat.",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "publisher": "opencode-community",
   "license": "MIT",
   "icon": "resources/icon.png",
