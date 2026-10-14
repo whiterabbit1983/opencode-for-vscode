@@ -1,0 +1,46 @@
+name: Build VSIX
+
+# Packages the extension on every commit to main. The artifact is downloadable
+# from the workflow run, which is what CI/dev builds and manual testing install.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# A newer commit makes any in-flight build irrelevant, so drop it.
+concurrency:
+  group: vsix-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    name: Package VSIX
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # @vscode/vsce 4 requires Node >= 22.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      # Runs vscode:prepublish (the production build) and then packages it.
+      # @vscode/vsce is pinned in devDependencies, so local and CI builds
+      # use the same version.
+      - run: npm run vsix
+
+      - name: Upload VSIX
+        uses: actions/upload-artifact@v4
+        with:
+          name: opencode-vscode-${{ github.sha }}
+          path: "*.vsix"
+          if-no-files-found: error
+          retention-days: 30

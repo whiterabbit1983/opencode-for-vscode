@@ -41,3 +41,15 @@ export function onSettingsChanged(handler: () => void): vscode.Disposable {
     }
   });
 }
+
+/**
+ * Names the machine the agent actually runs on. `extensionKind` pins this
+ * extension to the workspace host, so under Remote-SSH that is the remote box.
+ * Anything that has to tell the user which binary is missing — or where to look
+ * for it — must name that machine, because a `which opencode` run in their
+ * local terminal finds a different one.
+ */
+export function hostLabel(): string {
+  const remote = vscode.env.remoteName;
+  return remote ? `the remote host (${remote})` : "this machine";
+}

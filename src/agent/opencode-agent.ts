@@ -33,7 +33,7 @@ import {
   type WriteTextFileRequest,
 } from "@agentclientprotocol/sdk";
 
-import { readSettings } from "../config.js";
+import { hostLabel, readSettings } from "../config.js";
 import { describeError, log } from "../logger.js";
 import { EXTENSION_VERSION } from "../version.js";
 
@@ -314,8 +314,11 @@ export class OpenCodeAgent {
     const text = message ?? describeError(error);
     if (/ENOENT|not found|command not found/i.test(text)) {
       const settings = readSettings();
+      const where = hostLabel();
       return new AgentError(
-        `Could not run \`${settings.binaryPath}\`. Install OpenCode or set \`opencode.binaryPath\` to the absolute path printed by \`which opencode\`.`,
+        `Could not run \`${settings.binaryPath}\` on ${where}. Install OpenCode there, or set ` +
+          `\`opencode.binaryPath\` to its absolute path — run \`which opencode\` in a VS Code ` +
+          `terminal on ${where} to find it. The extension host may not inherit your login shell's PATH.`,
         undefined,
         false,
       );

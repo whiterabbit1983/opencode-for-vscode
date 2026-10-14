@@ -37,6 +37,32 @@ to sift through.
 If `opencode` is not on your `PATH`, set `opencode.binaryPath` to the absolute
 path printed by `which opencode`.
 
+## Remote development (SSH, WSL, containers, Codespaces)
+
+The extension declares `"extensionKind": ["workspace"]`, so it runs in the
+**workspace** extension host, not the local one. Under Remote-SSH that means
+`opencode` is started on the remote machine, and every file the agent reads or
+writes, diff, and terminal is the remote one. Nothing needs to be configured
+for this — it is the default.
+
+Install the extension on the remote host: connect with Remote-SSH, then run
+**Extensions: Install from VSIX…** and pick *Install in SSH: your-host* (not the
+local one).
+
+Two things are easy to get wrong:
+
+- **Set `binaryPath` for the remote.** Put an absolute path in the
+  *Remote [SSH: your-host]* scope in Settings, not just *User*. A path that
+  works locally will not exist on the remote.
+- **The extension host's `PATH` is not your login shell's.** The VS Code server
+  is started by a non-interactive SSH command, so `~/.opencode/bin`,
+  `~/.local/bin`, and nvm shims are often missing from it. If `binaryPath` is
+  left as `opencode`, run `which opencode` *inside a VS Code terminal* — that
+  terminal inherits the extension host's environment. If it is not found there,
+  set an absolute path.
+
+If the agent fails to start, the error names the host it tried to run on.
+
 ## Commands
 
 | Command | What it does |

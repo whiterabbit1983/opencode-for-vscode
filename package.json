@@ -39,6 +39,9 @@
     "onStartupFinished"
   ],
   "main": "./dist/extension.js",
+  "extensionKind": [
+    "workspace"
+  ],
   "contributes": {
     "viewsContainers": {
       "activitybar": [
@@ -134,8 +137,7 @@
       }
     ],
     "menus": {
-      "view/title": [
-      ],
+      "view/title": [],
       "editor/context": [
         {
           "command": "opencode.chat.askAboutSelection",
@@ -269,7 +271,7 @@
     "smoke": "npm run build && node dist/test/smoke.js",
     "preview": "npm run build && node scripts/preview.mjs",
     "icon": "node scripts/make-icon.mjs",
-    "vsix": "npm run package && npx @vscode/vsce package --no-dependencies"
+    "vsix": "vsce package --no-dependencies"
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "^1.8.0",
@@ -281,8 +283,12 @@
     "@types/pngjs": "^6.0.5",
     "@types/vscode": "^1.95.0",
     "@vscode/codicons": "^0.0.46-24",
+    "@vscode/vsce": "4.0.0",
     "esbuild": "^0.25.0",
     "pngjs": "^7.0.0",
     "typescript": "^5.7.3"
+  },
+  "allowScripts": {
+    "esbuild@0.25.12": true
   }
 }

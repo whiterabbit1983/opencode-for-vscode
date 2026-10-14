@@ -39,6 +39,15 @@ export const window = {
   },
 };
 
+/**
+ * `config.ts` reads `remoteName` to decide whether the agent runs locally or on
+ * a remote host. Off by default, which is what a plain terminal looks like.
+ * Override with `OPENCODE_FAKE_REMOTE_NAME` to exercise the remote wording.
+ */
+export const env = {
+  remoteName: process.env.OPENCODE_FAKE_REMOTE_NAME,
+};
+
 export class Disposable {
   constructor(private readonly fn: () => void = () => undefined) {}
   dispose(): void {
@@ -46,4 +55,4 @@ export class Disposable {
   }
 }
 
-export default { workspace, window, Disposable };
+export default { workspace, window, env, Disposable };
