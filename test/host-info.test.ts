@@ -118,7 +118,10 @@ test("the version is read without its leading v", () => {
  */
 function standInOpenCode(
   dir: string,
-  options: { configOptions?: "none" | "empty-model" | "model" | "partial-model"; omnirouter?: boolean } = {},
+  options: {
+    configOptions?: "none" | "empty-model" | "model" | "partial-model" | "everything";
+    omnirouter?: boolean;
+  } = {},
 ): string {
   const binary = join(dir, "opencode");
   const modelOption = (value: string, choices: Array<{ value: string; name: string }>) =>
@@ -135,7 +138,11 @@ function standInOpenCode(
           `[${modelOption("opencode/big-pickle", [{ value: "opencode/big-pickle", name: "Big Pickle" }])}]`
         : options.configOptions === "empty-model"
           ? `[${modelOption("", [])}]`
-          : undefined;
+          : options.configOptions === "everything"
+            ? // The healthy case: the agent enumerates the whole catalog, so
+              // there is nothing to report.
+              `[${modelOption("opencode/big-pickle", [{ value: "opencode/big-pickle", name: "Big Pickle" }, { value: "opencode/cat-jam-free", name: "Cat Jam Free" }])}]`
+            : undefined;
   const catalog = options.omnirouter
     ? "opencode/big-pickle\\nopencode/cat-jam-free\\ncorphub/claude-opus-5-5\\ncorphub/cc/claude-opus-5-5\\n"
     : "opencode/big-pickle\\nopencode/cat-jam-free\\n";
@@ -411,6 +418,80 @@ test(`${SELECTABLE[0]}`, async () => {
     assert.equal(state.model?.id, "opencode/session-model");
     // The host still reports what the machine has.
     assert.equal(state.host?.modelCount, 2);
+  } finally {
+    chat.dispose();
+  }
+});
+
+/* ------------------------------------------------------------------ */
+/* Naming the models the session cannot offer, and the file behind them  */
+/* ------------------------------------------------------------------ */
+
+test("a provider the session lacks is reported with the file that declares it", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "opencode-install-"));
+  const binary = standInOpenCode(dir, { configOptions: "partial-model", omnirouter: true });
+  const home = remoteShapedHome(binary);
+
+  const chat = new ChatSession(() => dir);
+  try {
+    await withEnv({ OPENCODE_BIN: binary, HOME: home, PATH: "/usr/bin:/bin" }, async () => {
+      await chat.start(undefined);
+      await waitFor(() => Boolean(chat.snapshot().host));
+    });
+
+    // The OmniRouter rows are not offered, so the only way anyone finds out is
+    // by being told which config file to go and look at. The built-in
+    // `opencode/*` model the session also lacks is reported alongside it,
+    // without a path, because no config file declares it.
+    assert.deepEqual(chat.snapshot().modelGap, [
+      { provider: "opencode", providerId: "opencode", count: 1, path: undefined },
+      {
+        provider: "OmniRouter",
+        providerId: "corphub",
+        count: 2,
+        path: `${dir}/opencode.json`,
+      },
+    ]);
+  } finally {
+    chat.dispose();
+  }
+});
+
+test("a gap is reported without a path when no config file declares the provider", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "opencode-install-"));
+  const binary = standInOpenCode(dir, { configOptions: "model" });
+  const home = remoteShapedHome(binary);
+
+  const chat = new ChatSession(() => dir);
+  try {
+    await withEnv({ OPENCODE_BIN: binary, HOME: home, PATH: "/usr/bin:/bin" }, async () => {
+      await chat.start(undefined);
+      await waitFor(() => Boolean(chat.snapshot().host));
+    });
+
+    // `opencode/*` is built into the install, not declared by a config file. An
+    // absent path is honest; a guessed one would send someone to the wrong file.
+    assert.deepEqual(chat.snapshot().modelGap, [
+      { provider: "opencode", providerId: "opencode", count: 2, path: undefined },
+    ]);
+  } finally {
+    chat.dispose();
+  }
+});
+
+test("no gap is reported when the session offers everything the machine lists", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "opencode-install-"));
+  const binary = standInOpenCode(dir, { configOptions: "everything" });
+  const home = remoteShapedHome(binary);
+
+  const chat = new ChatSession(() => dir);
+  try {
+    await withEnv({ OPENCODE_BIN: binary, HOME: home, PATH: "/usr/bin:/bin" }, async () => {
+      await chat.start(undefined);
+      await waitFor(() => Boolean(chat.snapshot().host));
+    });
+
+    assert.equal(chat.snapshot().modelGap, undefined);
   } finally {
     chat.dispose();
   }

@@ -139,6 +139,30 @@ export interface HostInfoView {
   error?: string;
 }
 
+/**
+ * A provider the machine is configured for that the session does not offer.
+ *
+ * The file is the point: a provider's models are missing from the picker
+ * because the agent did not load the config that declares them, and naming that
+ * file is what turns "the models are gone" into something a person can fix.
+ */
+export interface ModelGapView {
+  /** The provider's name as its config gives it — `OmniRouter` — else its id. */
+  provider: string;
+  /** The id the model ids are built from — `corphub`. */
+  providerId: string;
+  /** How many of that provider's models the session cannot be moved onto. */
+  count: number;
+  /**
+   * The config file that declares it.
+   *
+   * Left out when no source in `debug config` names it, which happens when the
+   * provider is built into the install rather than configured. An absent path
+   * is honest; a guessed one would send someone to the wrong file.
+   */
+  path?: string;
+}
+
 export interface ChatState {
   connection: ConnectionState;
   connectionMessage?: string;
@@ -162,6 +186,18 @@ export interface ChatState {
    */
   modelRecent?: string[];
   modelFavorite?: string[];
+  /**
+   * Providers this machine is configured for that the session cannot be moved
+   * onto.
+   *
+   * `session/set_config_option` resolves a model against the agent's own
+   * catalog, so a provider the agent does not enumerate is not a model the
+   * picker can offer — the row would look selectable and do nothing. When the
+   * machine's `opencode models` disagrees with the agent about this, the
+   * disagreement is worth naming: the config file is the thing a person can
+   * actually act on, and silently dropping the models hides why.
+   */
+  modelGap?: ModelGapView[];
   /** The machine the agent and the settings above come from. */
   host?: HostInfoView;
   usage?: Usage;

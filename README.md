@@ -117,14 +117,23 @@ ACP route to select one. So the extension never adds rows of its own: a row it
 cannot deliver is worse than a missing one, because a missing one sends you
 looking at the real cause.
 
-Two things produce that state, and both are worth checking:
+When `opencode models` and the agent's catalog disagree, the **more** menu says
+so and names the file that declares the missing provider:
+
+> **OmniRouter** is not offered by this session. 8 models are configured in
+> `/srv/api/omnirouter.json`, which the agent has not loaded.
+
+The same thing is written to the log (**Show log**), so it is on record even if
+the menu is never opened. Two things produce that state:
 
 - The agent started before the config was in its environment. See
-  [below](#config-files-opencode-only-finds-through-the-environment).
-- The provider is configured for a different machine or a different directory
-  than the session's. The **more** menu names the host, the config directory and
-  every config source that install loaded, which is the fastest way to see which
-  `opencode.json` the agent actually read.
+  [below](#config-files-opencode-only-finds-through-the-environment), or point
+  `opencode.configFile` / `opencode.configDir` at it and **Restart agent**.
+- The provider is configured for a different directory than the session's. The
+  **more** menu names every config source that install loaded.
+
+A provider built into the install rather than configured — `opencode/*` — is
+reported without a file, because no file is what is wrong.
 
 ### Config files OpenCode only finds through the environment
 
@@ -248,8 +257,9 @@ npm run preview            # writes screenshots of every scenario to dev/shots/
 ```
 
 Scenarios: `transcript`, `permission`, `question`, `welcome`, `error`,
-`remote-host`, `remote-host-no-models`, `omnirouter`. Add `&expand=N` to open the
-first `N` tool cards, or `&menu=model|mode|more` to leave a menu open.
+`remote-host`, `remote-host-no-models`, `omnirouter`, `omnirouter-missing`. Add
+`&expand=N` to open the first `N` tool cards, or `&menu=model|mode|more` to leave
+a menu open.
 
 ## License
 

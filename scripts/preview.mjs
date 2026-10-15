@@ -28,6 +28,7 @@ const scenarios = process.argv.slice(2).length
       "remote-host&menu=more",
       "remote-host-no-models&menu=model",
       "omnirouter&menu=model",
+      "omnirouter-missing&menu=more",
     ];
 
 const browsers = ["firefox", "google-chrome", "chromium", "chromium-browser"];

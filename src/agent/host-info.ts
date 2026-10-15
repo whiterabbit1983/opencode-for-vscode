@@ -24,12 +24,14 @@ import {
   parseConfigSources,
   parseModels,
   parsePaths,
+  parseProviderSources,
   parseProviders,
   parseTuiModels,
   parseVersion,
   type AgentView,
   type ConfigSourceView,
   type PathsView,
+  type ProviderSource,
   type ProviderView,
   type TuiModelMemory,
 } from "../shared/opencode-cli.js";
@@ -59,6 +61,15 @@ export interface HostInfo {
   models?: string[];
   /** The providers behind them, under the names their config gives them. */
   providers?: ProviderView[];
+  /**
+   * Which config file declares which provider.
+   *
+   * `providers` merges the sources the way OpenCode does, which is what the
+   * picker wants but says nothing about where a provider came from. When a
+   * provider is configured on this machine and its agent does not offer it,
+   * the file that defines it is the answer, so the declaration is kept per file.
+   */
+  providerSources?: ProviderSource[];
   /** Which models the OpenCode TUI has recently used and starred. */
   tuiModels?: TuiModelMemory;
   /** Agents the host has configured. */
@@ -99,11 +110,22 @@ export async function readHostInfo(options: HostInfoOptions): Promise<HostInfo> 
   ]);
   const config = parseConfigSources(configJson);
   const providers = parseProviders(configJson);
+  const providerSources = parseProviderSources(configJson);
   // Only readable once `debug paths` has said where the state directory is, so
   // this cannot join the batch above.
   const tuiModels = await readTuiModels(paths?.state);
 
-  const info: HostInfo = { binary: options.binary, version, paths, sources: config, models, providers, tuiModels, agents };
+  const info: HostInfo = {
+    binary: options.binary,
+    version,
+    paths,
+    sources: config,
+    models,
+    providers,
+    providerSources,
+    tuiModels,
+    agents,
+  };
   // A host that answered nothing at all is worth saying out loud: it usually
   // means the binary on this machine is not the one the user expects.
   if (!version && !paths?.config && !config.length && !models.length && !agents.length) {

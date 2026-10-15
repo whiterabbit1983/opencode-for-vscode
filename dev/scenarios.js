@@ -420,3 +420,11 @@ scenarios = {
     items: [],
   },
 };
+
+// The same box one config behind: OmniRouter is configured and the machine can
+// list it, but the agent's own catalog never enumerated it, so the picker does
+// not offer those rows. The more menu is what says so, and names the file.
+scenarios["omnirouter-missing"] = {
+  ...scenarios.omnirouter,
+  modelGap: [{ provider: "OmniRouter", providerId: "corphub", count: 8, path: "/srv/api/omnirouter.json" }],
+};

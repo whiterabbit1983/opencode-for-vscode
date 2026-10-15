@@ -30,6 +30,7 @@ import type {
   ChatState,
   ConfigOptionView,
   HostInfoView,
+  ModelGapView,
   PermissionRequest,
   Question,
   SessionSummary,
@@ -151,6 +152,7 @@ export class ChatSession implements vscode.Disposable {
     // one that works. The host catalog still describes the machine in the
     // settings summary, where it is information rather than a choice.
     const configOptions = this.configOptions;
+    const gap = this.modelGap(configOptions);
     return {
       connection: this.connection,
       connectionMessage: this.connectionMessage,
@@ -163,6 +165,7 @@ export class ChatSession implements vscode.Disposable {
       configOptions: configOptions.length ? configOptions : undefined,
       commands: this.commands,
       model: currentModel(configOptions),
+      modelGap: gap.length ? gap : undefined,
       modelRecent: this.tuiModels(configOptions, "recent"),
       modelFavorite: this.tuiModels(configOptions, "favorite"),
       host: this.hostView(),
@@ -197,6 +200,53 @@ export class ChatSession implements vscode.Disposable {
   /** Where the model option sits in a list, by id or failing that by category. */
   private modelOptionIndex(options: ConfigOptionView[]): number {
     return options.findIndex((option) => option.id === "model" || option.category === "model");
+  }
+
+  /**
+   * Providers this machine is configured for that this session cannot be moved
+   * onto.
+   *
+   * The two lists are produced by different processes — `opencode models` from
+   * a fresh CLI run, the session's own option from the agent — so they can
+   * disagree. When they do, the useful answer is not the models (they are not
+   * selectable, which is why the picker does not offer them) but the config file
+   * that declares them: that is what someone can act on, whether by loading it,
+   * by pointing `opencode.configFile` at it, or by moving the session to the
+   * directory it was written for.
+   *
+   * Attributed to the *last* source that declares the provider, which is the
+   * one OpenCode would end up using when a later file redefines an earlier one.
+   */
+  private modelGap(configOptions: ConfigOptionView[]): ModelGapView[] {
+    const models = this.hostInfo?.models;
+    const index = this.modelOptionIndex(configOptions);
+    const offered = new Set(configOptions[index]?.options?.map((option) => option.value));
+    // A session that offers nothing at all is the largest gap there is, and the
+    // most worth naming a file for, so nothing is excluded here.
+    if (!models?.length) {
+      return [];
+    }
+    const missing = models.filter((model) => !offered.has(model));
+    if (!missing.length) {
+      return [];
+    }
+
+    const counts = new Map<string, number>();
+    for (const model of missing) {
+      const slash = model.indexOf("/");
+      const id = slash > 0 ? model.slice(0, slash) : model;
+      counts.set(id, (counts.get(id) ?? 0) + 1);
+    }
+
+    const byId = new Map(this.hostInfo?.providers?.map((provider) => [provider.id, provider]));
+    return [...counts].map(([providerId, count]) => ({
+      provider: byId.get(providerId)?.name ?? providerId,
+      providerId,
+      count,
+      path: this.hostInfo?.providerSources
+        ?.filter((source) => source.providers.some((provider) => provider.id === providerId))
+        .at(-1)?.path,
+    }));
   }
 
   /**
@@ -256,6 +306,7 @@ export class ChatSession implements vscode.Disposable {
     this.hostInfoRead = readHostInfo({ binary: launch.binary, env: launch.env, cwd })
       .then((info) => {
         this.hostInfo = info;
+        this.logModelGap();
         this.touch();
       })
       .catch((error) => {
@@ -263,10 +314,50 @@ export class ChatSession implements vscode.Disposable {
       });
   }
 
+  /**
+   * Writes down every provider the machine has and the session does not.
+   *
+   * These models cannot be selected — the agent's catalog is what
+   * `set_config_option` resolves against — so the only way someone finds out is
+   * by noticing they are missing. The log names the file that declares them,
+   * which is the thing to go and look at.
+   *
+   * The host settings and the session's own options arrive independently and in
+   * either order, so this is called from both and repeats nothing.
+   */
+  private logModelGap(): void {
+    const models = this.hostInfo?.models?.length ?? 0;
+    const gap = this.modelGap(this.configOptions);
+    const signature = `${models}|${gap.map((entry) => `${entry.providerId}:${entry.count}@${entry.path}`).join(",")}`;
+    if (signature === this.modelGapLogged) {
+      return;
+    }
+    this.modelGapLogged = signature;
+    if (!models) {
+      return;
+    }
+    if (!gap.length) {
+      log.info("all %d model(s) this machine lists are offered by the session", models);
+      return;
+    }
+    for (const entry of gap) {
+      log.warn(
+        "%s: %d of its model(s), configured in %s, are not offered by this session",
+        entry.provider,
+        entry.count,
+        entry.path ?? "no config file that OpenCode reports (it is built into the install)",
+      );
+    }
+  }
+
+  /** The gap already written to the log, so a repeat is not noise. */
+  private modelGapLogged?: string;
+
   /** Forgets the host summary, so a restarted agent is asked again. */
   private resetHostInfo(): void {
     this.hostInfo = undefined;
     this.hostInfoRead = undefined;
+    this.modelGapLogged = undefined;
   }
 
   private summary(): SessionSummary | undefined {
@@ -373,6 +464,7 @@ export class ChatSession implements vscode.Disposable {
     this.cwd = cwd;
     this.modes = toModes(response.modes);
     this.configOptions = toConfigOptions(response.configOptions);
+    this.logModelGap();
     // `false`: this conversation is empty, so the meter stays empty. `thread.reset()`
     // above already cleared it; saying so explicitly is what keeps the previous
     // chat's token count from reappearing here.
@@ -485,6 +577,7 @@ export class ChatSession implements vscode.Disposable {
       const response = await this.agent.loadSession(sessionId, cwd);
       this.modes = toModes(response.modes);
       this.configOptions = toConfigOptions(response.configOptions);
+      this.logModelGap();
       // The loaded session may use a different model/mode/effort than the one
       // that was active before, so publish the restored config right away.
       this.touch();
@@ -788,6 +881,9 @@ export class ChatSession implements vscode.Disposable {
 
       case "config_option_update":
         this.configOptions = toConfigOptions(update.configOptions);
+        // A provider can join the catalog mid-session. Re-checking here is what
+        // turns that into a line in the log rather than a stale warning.
+        this.logModelGap();
         this.touch();
         return;
 

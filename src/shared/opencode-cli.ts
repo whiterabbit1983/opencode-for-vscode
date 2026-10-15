@@ -139,6 +139,22 @@ function jsonArray(stdout: string): unknown[] {
   return [];
 }
 
+/**
+ * The provider declarations one config file carries, before any other file has
+ * a say.
+ *
+ * `parseProviders` merges the sources because the picker wants the answer that
+ * OpenCode itself would give. The gap between what a machine can list and what
+ * its agent enumerates needs the opposite: the file a provider is defined *in*,
+ * which is the only thing worth naming when that provider goes missing.
+ */
+export interface ProviderSource {
+  /** The file this came from, as `debug config` spells it. */
+  path: string;
+  /** Only the providers this file declares. */
+  providers: ProviderView[];
+}
+
 /** Reads `opencode debug config`: where OpenCode loaded its settings from. */
 export function parseConfigSources(stdout: string): ConfigSourceView[] {
   const sources: ConfigSourceView[] = [];
@@ -160,6 +176,50 @@ export function parseConfigSources(stdout: string): ConfigSourceView[] {
   return sources;
 }
 
+/** The provider blocks one source's `info` carries. */
+function providersIn(info: unknown): ProviderView[] {
+  if (!info || typeof info !== "object") {
+    return [];
+  }
+  const declared = (info as { providers?: unknown }).providers;
+  if (!declared || typeof declared !== "object") {
+    return [];
+  }
+  const providers: ProviderView[] = [];
+  for (const [id, value] of Object.entries(declared as Record<string, unknown>)) {
+    if (!value || typeof value !== "object") {
+      continue;
+    }
+    const record = value as { name?: unknown; models?: unknown };
+    const models = modelNames(record.models);
+    providers.push({
+      id,
+      name: typeof record.name === "string" && record.name ? record.name : id,
+      models: Object.keys(models).length ? models : undefined,
+    });
+  }
+  return providers;
+}
+
+/** Which config file declares which providers, in load order. */
+export function parseProviderSources(stdout: string): ProviderSource[] {
+  const sources: ProviderSource[] = [];
+  for (const entry of jsonArray(stdout)) {
+    if (!entry || typeof entry !== "object") {
+      continue;
+    }
+    const { path, info } = entry as { path?: unknown; info?: unknown };
+    if (typeof path !== "string" || !path) {
+      continue;
+    }
+    const providers = providersIn(info);
+    if (providers.length) {
+      sources.push({ path, providers });
+    }
+  }
+  return sources;
+}
+
 /**
  * Reads the providers out of `opencode debug config`.
  *
@@ -174,29 +234,13 @@ export function parseConfigSources(stdout: string): ConfigSourceView[] {
  */
 export function parseProviders(stdout: string): ProviderView[] {
   const byId = new Map<string, ProviderView>();
-  for (const entry of jsonArray(stdout)) {
-    if (!entry || typeof entry !== "object") {
-      continue;
-    }
-    const info = (entry as { info?: unknown }).info;
-    if (!info || typeof info !== "object") {
-      continue;
-    }
-    const providers = (info as { providers?: unknown }).providers;
-    if (!providers || typeof providers !== "object") {
-      continue;
-    }
-    for (const [id, value] of Object.entries(providers as Record<string, unknown>)) {
-      if (!value || typeof value !== "object") {
-        continue;
-      }
-      const record = value as { name?: unknown; models?: unknown };
-      const models = modelNames(record.models);
-      const previous = byId.get(id);
-      byId.set(id, {
-        id,
-        name: typeof record.name === "string" && record.name ? record.name : previous?.name,
-        models: Object.keys(models).length ? models : previous?.models,
+  for (const source of parseProviderSources(stdout)) {
+    for (const provider of source.providers) {
+      const previous = byId.get(provider.id);
+      byId.set(provider.id, {
+        id: provider.id,
+        name: provider.name !== provider.id ? provider.name : previous?.name,
+        models: provider.models ?? previous?.models,
       });
     }
   }

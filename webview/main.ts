@@ -991,6 +991,7 @@ function menuContent(kind: Exclude<UiState["menu"], "none">): string {
   // "more" menu
   return [
     hostNote(),
+    modelGapNote(),
     `<div class="menu-label">OpenCode</div>`,
     `<button class="menu-item" data-action="menu-cmd" data-value="new">${icon("add")} New chat</button>`,
     `<button class="menu-item" data-action="menu-cmd" data-value="history">${icon("history")} Resume chat…</button>`,
@@ -1034,6 +1035,31 @@ function hostNote(): string {
 /** `1 model` / `2 models`, so a count never reads as `1 model(s)`. */
 function plural(count: number, noun: string): string {
   return `${count} ${noun}${count === 1 ? "" : "s"}`;
+}
+
+/**
+ * What this machine has configured that the picker deliberately leaves out.
+ *
+ * These models cannot be selected — `set_config_option` resolves against the
+ * agent's own catalog — so the picker does not offer them. Saying nothing would
+ * leave the only symptom being "my OmniRouter models are gone", which reads as
+ * a bug in the extension rather than a config the agent has not loaded. The
+ * file is named because the file is what someone can go and look at.
+ */
+function modelGapNote(): string {
+  const gap = state.chat.modelGap;
+  if (!gap?.length) {
+    return "";
+  }
+  return gap
+    .map((entry) => {
+      const provider = escapeHtml(entry.provider);
+      const count = escapeHtml(plural(entry.count, "model"));
+      return entry.path
+        ? `<div class="menu-note"><strong>${provider}</strong> is not offered by this session. ${count} are configured in <code>${escapeHtml(entry.path)}</code>, which the agent has not loaded.</div>`
+        : `<div class="menu-note"><strong>${provider}</strong> is not offered by this session. ${count} are configured, in no file this OpenCode reports.</div>`;
+    })
+    .join("");
 }
 
 /* ------------------------------------------------------------------ */

@@ -6,6 +6,22 @@ All notable changes to this extension are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.2.6] - 2026-10-15
+
+### Added
+
+- The **more** menu now says when this machine has models the session cannot be
+  moved onto, and names the config file that declares them — *OmniRouter is not
+  offered by this session. 8 models are configured in
+  `/srv/api/omnirouter.json`, which the agent has not loaded.* Those models are
+  not in the picker because `set_config_option` refuses anything the agent's
+  catalog does not hold, so without this the only symptom was their absence,
+  which reads as a bug in the extension rather than a config the agent has not
+  picked up. A provider built into the install rather than configured is
+  reported without a file, since no file is what is wrong. The same finding is
+  written to the log, including when a provider later joins the catalog
+  mid-session, so it is on record whether or not the menu is opened.
+
 ## [0.2.5] - 2026-10-15
 
 ### Fixed
