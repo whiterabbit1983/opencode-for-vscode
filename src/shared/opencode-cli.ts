@@ -41,9 +41,9 @@ export interface AgentView {
  * the UI.
  */
 export interface ProviderView {
-  /** The id every model id is prefixed with, such as `corphub`. */
+  /** The id every model id is prefixed with, such as `acme`. */
   id: string;
-  /** The display name, when the config gives one — `OmniRouter` for `corphub`. */
+  /** The display name, when the config gives one — `Acme Router` for `acme`. */
   name?: string;
   /** Model id → display name, for the models this provider names. */
   models?: Record<string, string>;
@@ -224,7 +224,7 @@ export function parseProviderSources(stdout: string): ProviderSource[] {
  * Reads the providers out of `opencode debug config`.
  *
  * This is what lets the picker head each group with a name a person would use —
- * `OmniRouter` rather than `corphub` — and what gives a model the label its
+ * `Acme Router` rather than `acme` — and what gives a model the label its
  * author gave it (`Claude Opus 5.5`) instead of one rebuilt from its slug.
  *
  * Providers are merged across every source, in load order, so a project

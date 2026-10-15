@@ -76,7 +76,7 @@ export const CONFIG_MARKER = "OC_CONFIG=";
  * profile, which is precisely what the extension host has not seen: over
  * Remote-SSH it is started by a non-interactive SSH command, so an agent
  * launched from it comes up without those config files and every model behind
- * them — a custom provider such as OmniRouter — is missing from the picker.
+ * them — a custom provider configured only there — is missing from the picker.
  *
  * Only the two path-shaped variables are asked for. `OPENCODE_CONFIG_CONTENT`
  * carries a config document inline, which may span lines and may hold a key;

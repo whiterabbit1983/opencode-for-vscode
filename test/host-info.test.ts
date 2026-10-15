@@ -120,7 +120,7 @@ function standInOpenCode(
   dir: string,
   options: {
     configOptions?: "none" | "empty-model" | "model" | "partial-model" | "everything";
-    omnirouter?: boolean;
+    customProvider?: boolean;
   } = {},
 ): string {
   const binary = join(dir, "opencode");
@@ -143,11 +143,11 @@ function standInOpenCode(
               // there is nothing to report.
               `[${modelOption("opencode/big-pickle", [{ value: "opencode/big-pickle", name: "Big Pickle" }, { value: "opencode/cat-jam-free", name: "Cat Jam Free" }])}]`
             : undefined;
-  const catalog = options.omnirouter
-    ? "opencode/big-pickle\\nopencode/cat-jam-free\\ncorphub/claude-opus-5-5\\ncorphub/cc/claude-opus-5-5\\n"
+  const catalog = options.customProvider
+    ? "opencode/big-pickle\\nopencode/cat-jam-free\\nacme/claude-opus-5-5\\nacme/cc/claude-opus-5-5\\n"
     : "opencode/big-pickle\\nopencode/cat-jam-free\\n";
-  const omniProvider = options.omnirouter
-    ? `, { type: "document", path: "${dir}/opencode.json", info: { providers: { corphub: { name: "OmniRouter", models: { "claude-opus-5-5": { name: "Claude Opus 5.5" }, "cc/claude-opus-5-5": {} } } } } }`
+  const acmeProvider = options.customProvider
+    ? `, { type: "document", path: "${dir}/opencode.json", info: { providers: { acme: { name: "Acme Router", models: { "claude-opus-5-5": { name: "Claude Opus 5.5" }, "cc/claude-opus-5-5": {} } } } } }`
     : "";
   const script = `#!${process.execPath}
 const args = process.argv.slice(2);
@@ -161,7 +161,7 @@ if (args[0] === "debug" && args[1] === "paths") {
 if (args[0] === "debug" && args[1] === "config") {
   out(JSON.stringify([
     { type: "directory", path: "${dir}/.config/opencode" },
-    { type: "document", path: "${dir}/opencode.json", info: { model: "opencode/big-pickle" } }${omniProvider}
+    { type: "document", path: "${dir}/opencode.json", info: { model: "opencode/big-pickle" } }${acmeProvider}
   ]) + "\\n");
   process.exit(0);
 }
@@ -295,8 +295,8 @@ test("providers are read under the names their config gives them", () => {
         path: "/srv/app/opencode.json",
         info: {
           providers: {
-            corphub: {
-              name: "OmniRouter",
+            acme: {
+              name: "Acme Router",
               settings: { apiKey: "sk-live-secret" },
               models: { "claude-opus-5-5": { name: "Claude Opus 5.5" }, "cc/claude-opus-5-5": {} },
             },
@@ -308,8 +308,8 @@ test("providers are read under the names their config gives them", () => {
 
   assert.deepEqual(providers, [
     {
-      id: "corphub",
-      name: "OmniRouter",
+      id: "acme",
+      name: "Acme Router",
       // A model with no name of its own is left out rather than guessed at; the
       // picker falls back to humanising the slug.
       models: { "claude-opus-5-5": "Claude Opus 5.5" },
@@ -323,12 +323,12 @@ test("providers are read under the names their config gives them", () => {
 test("a provider redefined in a later source wins", () => {
   const providers = parseProviders(
     JSON.stringify([
-      { type: "directory", path: "/home/dev/.config/opencode", info: { providers: { corphub: { name: "OmniRouter", models: { a: { name: "A" } } } } } },
-      { type: "document", path: "/srv/app/opencode.json", info: { providers: { corphub: { name: "OmniRouter (staging)", models: { b: { name: "B" } } } } } },
+      { type: "directory", path: "/home/dev/.config/opencode", info: { providers: { acme: { name: "Acme Router", models: { a: { name: "A" } } } } } },
+      { type: "document", path: "/srv/app/opencode.json", info: { providers: { acme: { name: "Acme Router (staging)", models: { b: { name: "B" } } } } } },
     ]),
   );
 
-  assert.deepEqual(providers, [{ id: "corphub", name: "OmniRouter (staging)", models: { b: "B" } }]);
+  assert.deepEqual(providers, [{ id: "acme", name: "Acme Router (staging)", models: { b: "B" } }]);
 });
 
 test("a source that names no provider is not a provider", () => {
@@ -343,33 +343,33 @@ test("a source that names no provider is not a provider", () => {
 test("the TUI's recent and starred models are read as ids", () => {
   const remembered = parseTuiModels(
     JSON.stringify({
-      recent: [{ providerID: "corphub", modelID: "claude-opus-5-5" }, { providerID: "opencode", modelID: "big-pickle" }],
-      favorite: [{ providerID: "corphub", modelID: "claude-sonnet-5-5" }],
+      recent: [{ providerID: "acme", modelID: "claude-opus-5-5" }, { providerID: "opencode", modelID: "big-pickle" }],
+      favorite: [{ providerID: "acme", modelID: "claude-sonnet-5-5" }],
       variant: {},
     }),
   );
 
-  assert.deepEqual(remembered.recent, ["corphub/claude-opus-5-5", "opencode/big-pickle"]);
-  assert.deepEqual(remembered.favorite, ["corphub/claude-sonnet-5-5"]);
+  assert.deepEqual(remembered.recent, ["acme/claude-opus-5-5", "opencode/big-pickle"]);
+  assert.deepEqual(remembered.favorite, ["acme/claude-sonnet-5-5"]);
 });
 
 test("a model the TUI both starred and used recently is listed once", () => {
   const remembered = parseTuiModels(
     JSON.stringify({
-      recent: [{ providerID: "corphub", modelID: "claude-opus-5-5" }],
-      favorite: [{ providerID: "corphub", modelID: "claude-opus-5-5" }],
+      recent: [{ providerID: "acme", modelID: "claude-opus-5-5" }],
+      favorite: [{ providerID: "acme", modelID: "claude-opus-5-5" }],
     }),
   );
 
   // Keeping it in both would draw the same row twice in one picker.
   assert.deepEqual(remembered.recent, []);
-  assert.deepEqual(remembered.favorite, ["corphub/claude-opus-5-5"]);
+  assert.deepEqual(remembered.favorite, ["acme/claude-opus-5-5"]);
 });
 
 test("a half-written or unfamiliar model.json remembers nothing", () => {
   // The TUI rewrites this file in place while it runs, so a torn read is normal
   // and must not throw.
-  for (const contents of ["", "{", "null", "[]", JSON.stringify({ recent: "nope" }), JSON.stringify({ recent: [{ modelID: "orphan" }, { providerID: "corphub" }, "corphub/x"] })]) {
+  for (const contents of ["", "{", "null", "[]", JSON.stringify({ recent: "nope" }), JSON.stringify({ recent: [{ modelID: "orphan" }, { providerID: "acme" }, "acme/x"] })]) {
     const remembered = parseTuiModels(contents);
     assert.deepEqual(remembered.recent, [], contents);
     assert.deepEqual(remembered.favorite, [], contents);
@@ -429,7 +429,7 @@ test(`${SELECTABLE[0]}`, async () => {
 
 test("a provider the session lacks is reported with the file that declares it", async () => {
   const dir = mkdtempSync(join(tmpdir(), "opencode-install-"));
-  const binary = standInOpenCode(dir, { configOptions: "partial-model", omnirouter: true });
+  const binary = standInOpenCode(dir, { configOptions: "partial-model", customProvider: true });
   const home = remoteShapedHome(binary);
 
   const chat = new ChatSession(() => dir);
@@ -439,15 +439,15 @@ test("a provider the session lacks is reported with the file that declares it", 
       await waitFor(() => Boolean(chat.snapshot().host));
     });
 
-    // The OmniRouter rows are not offered, so the only way anyone finds out is
+    // The Acme Router rows are not offered, so the only way anyone finds out is
     // by being told which config file to go and look at. The built-in
     // `opencode/*` model the session also lacks is reported alongside it,
     // without a path, because no config file declares it.
     assert.deepEqual(chat.snapshot().modelGap, [
       { provider: "opencode", providerId: "opencode", count: 1, path: undefined },
       {
-        provider: "OmniRouter",
-        providerId: "corphub",
+        provider: "Acme Router",
+        providerId: "acme",
         count: 2,
         path: `${dir}/opencode.json`,
       },
@@ -499,9 +499,9 @@ test("no gap is reported when the session offers everything the machine lists", 
 
 test(`${SELECTABLE[1]}`, async () => {
   // The reported bug: on a remote box the session offered a non-empty list, so
-  // the OmniRouter rows used to appear and then do nothing when picked.
+  // the Acme Router rows used to appear and then do nothing when picked.
   const dir = mkdtempSync(join(tmpdir(), "opencode-install-"));
-  const binary = standInOpenCode(dir, { configOptions: "partial-model", omnirouter: true });
+  const binary = standInOpenCode(dir, { configOptions: "partial-model", customProvider: true });
   const home = remoteShapedHome(binary);
 
   const chat = new ChatSession(() => dir);
@@ -521,7 +521,7 @@ test(`${SELECTABLE[1]}`, async () => {
     // just not offered as something this session can be moved onto.
     assert.equal(state.host?.modelCount, 4);
     assert.deepEqual(state.host?.providers, [
-      { id: "corphub", name: "OmniRouter", models: { "claude-opus-5-5": "Claude Opus 5.5" } },
+      { id: "acme", name: "Acme Router", models: { "claude-opus-5-5": "Claude Opus 5.5" } },
     ]);
   } finally {
     chat.dispose();

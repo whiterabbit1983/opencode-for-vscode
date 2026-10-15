@@ -1042,7 +1042,7 @@ function plural(count: number, noun: string): string {
  *
  * These models cannot be selected — `set_config_option` resolves against the
  * agent's own catalog — so the picker does not offer them. Saying nothing would
- * leave the only symptom being "my OmniRouter models are gone", which reads as
+ * leave the only symptom being "my custom provider's models are gone", which reads as
  * a bug in the extension rather than a config the agent has not loaded. The
  * file is named because the file is what someone can go and look at.
  */
@@ -1090,7 +1090,7 @@ interface ModelChoice {
  * Builds the model picker.
  *
  * A flat list is not usable once a machine carries a few hundred models — which
- * is exactly the state a provider like OmniRouter creates — so the list is cut
+ * is exactly the state a large custom provider creates — so the list is cut
  * three ways: the models this person actually works with first, then one section
  * per provider under the name that provider's config gives it, then a filter
  * over all of it so nothing is out of reach.
@@ -1148,7 +1148,7 @@ function filterCount(shown: number, total: number): string {
  * Whether a model matches what the user typed.
  *
  * Both the readable label and the raw id are searched, so `opus` finds
- * `Claude Opus 5.5` and `corphub` finds everything OmniRouter serves, even
+ * `Claude Opus 5.5` and `acme` finds everything Acme Router serves, even
  * where the label the agent supplies says neither.
  */
 function matchesFilter(choice: ModelChoice, query: string): boolean {
@@ -1226,8 +1226,8 @@ function providerOf(id: string): string {
 /**
  * The name to head a provider's section with.
  *
- * The config knows a provider by a name a person would use — `corphub` is
- * OmniRouter — so that is what the heading says. The id goes beside it in the
+ * The config knows a provider by a name a person would use — `acme` is
+ * Acme Router — so that is what the heading says. The id goes beside it in the
  * note, because it is what the model ids are built from and someone reading an
  * error message will be looking for it.
  */
@@ -1262,8 +1262,8 @@ function renderModelGroup(group: ModelGroup): string {
  * rather than off a separate menu.
  *
  * `named` says the section heading already names the provider, which is the
- * case inside a provider group — repeating `corphub` under a heading that says
- * OmniRouter is noise on every row.
+ * case inside a provider group — repeating `acme` under a heading that says
+ * Acme Router is noise on every row.
  */
 function renderModelChoice(choice: ModelChoice, named: boolean): string {
   const label = modelLabel(choice.value, choice.label);

@@ -761,12 +761,12 @@ test("the config environment a profile exports is read out of the probe", () => 
   const answer = [
     "OC_PATH=/usr/bin",
     "OC_BIN=/usr/bin/opencode",
-    "OC_CONFIG=OPENCODE_CONFIG=/srv/api/omnirouter.json",
+    "OC_CONFIG=OPENCODE_CONFIG=/srv/api/custom-provider.json",
     "OC_CONFIG=OPENCODE_CONFIG_DIR=/srv/api/opencode",
   ].join("\n");
 
   assert.deepEqual(parseProbe(answer).configEnv, {
-    OPENCODE_CONFIG: "/srv/api/omnirouter.json",
+    OPENCODE_CONFIG: "/srv/api/custom-provider.json",
     OPENCODE_CONFIG_DIR: "/srv/api/opencode",
   });
 });

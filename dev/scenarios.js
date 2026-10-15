@@ -133,9 +133,9 @@ scenarios = {
   },
 
   // A remote host whose catalog is mostly a custom provider: every model id is
-  // `corphub/…`, several of them nested one level deeper (`corphub/cc/…`).
+  // `acme/…`, several of them nested one level deeper (`acme/cc/…`).
   // These are the models the agent enumerates, so every row here is selectable.
-  omnirouter: {
+  "custom-provider": {
     ...base,
     cwd: "/srv/acme-api",
     host: {
@@ -147,8 +147,8 @@ scenarios = {
       modelCount: 20,
       providers: [
         {
-          id: "corphub",
-          name: "OmniRouter",
+          id: "acme",
+          name: "Acme Router",
           models: {
             "claude-fable-5-1": "Claude Fable 5.1",
             "claude-fable-5-1-max": "Claude Fable 5.1 Max",
@@ -162,24 +162,24 @@ scenarios = {
         },
       ],
     },
-    modelRecent: ["corphub/claude-opus-5-5", "corphub/cc/claude-opus-5-5"],
-    modelFavorite: ["corphub/claude-sonnet-5-5"],
+    modelRecent: ["acme/claude-opus-5-5", "acme/cc/claude-opus-5-5"],
+    modelFavorite: ["acme/claude-sonnet-5-5"],
     configOptions: [
       {
         id: "model",
         name: "Model",
         type: "select",
         category: "model",
-        current: "corphub/claude-opus-5-5",
+        current: "acme/claude-opus-5-5",
         options: [
-          { value: "corphub/claude-fable-5-1", label: "corphub/Claude Fable 5.1" },
-          { value: "corphub/claude-fable-5-1-max", label: "corphub/Claude Fable 5.1 Max" },
-          { value: "corphub/claude-haiku-4-5-20251001", label: "corphub/Claude Haiku 4.5" },
-          { value: "corphub/claude-haiku-5-5", label: "corphub/Claude Haiku 5.5" },
-          { value: "corphub/claude-opus-5-5", label: "corphub/Claude Opus 5.5" },
-          { value: "corphub/cc/claude-opus-5-5", label: "corphub/Claude Opus 5.5 (cc)" },
-          { value: "corphub/claude/claude-opus-5-5", label: "corphub/Claude Opus 5.5 (claude)" },
-          { value: "corphub/claude-sonnet-5-5", label: "corphub/Claude Sonnet 5.5" },
+          { value: "acme/claude-fable-5-1", label: "acme/Claude Fable 5.1" },
+          { value: "acme/claude-fable-5-1-max", label: "acme/Claude Fable 5.1 Max" },
+          { value: "acme/claude-haiku-4-5-20251001", label: "acme/Claude Haiku 4.5" },
+          { value: "acme/claude-haiku-5-5", label: "acme/Claude Haiku 5.5" },
+          { value: "acme/claude-opus-5-5", label: "acme/Claude Opus 5.5" },
+          { value: "acme/cc/claude-opus-5-5", label: "acme/Claude Opus 5.5 (cc)" },
+          { value: "acme/claude/claude-opus-5-5", label: "acme/Claude Opus 5.5 (claude)" },
+          { value: "acme/claude-sonnet-5-5", label: "acme/Claude Sonnet 5.5" },
           { value: "opencode/big-pickle", label: "opencode/Big Pickle" },
           { value: "opencode/cat-jam-free", label: "opencode/Cat Jam Free" },
           { value: "opencode/exo-free", label: "opencode/Exo Free" },
@@ -421,10 +421,10 @@ scenarios = {
   },
 };
 
-// The same box one config behind: OmniRouter is configured and the machine can
+// The same box one config behind: Acme Router is configured and the machine can
 // list it, but the agent's own catalog never enumerated it, so the picker does
 // not offer those rows. The more menu is what says so, and names the file.
-scenarios["omnirouter-missing"] = {
-  ...scenarios.omnirouter,
-  modelGap: [{ provider: "OmniRouter", providerId: "corphub", count: 8, path: "/srv/api/omnirouter.json" }],
+scenarios["custom-provider-missing"] = {
+  ...scenarios["custom-provider"],
+  modelGap: [{ provider: "Acme Router", providerId: "acme", count: 8, path: "/srv/api/custom-provider.json" }],
 };

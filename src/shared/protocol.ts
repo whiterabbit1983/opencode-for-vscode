@@ -127,7 +127,7 @@ export interface HostInfoView {
   agents?: Array<{ id: string; name: string; description?: string; mode?: string }>;
   /**
    * The providers that machine has configured, under the names their config
-   * gives them — `OmniRouter` for `corphub`.
+   * gives them — `Acme Router` for `acme`.
    *
    * This is what lets the model picker head each group with a name a person
    * would use, instead of a provider id that only its config knows.
@@ -147,9 +147,9 @@ export interface HostInfoView {
  * file is what turns "the models are gone" into something a person can fix.
  */
 export interface ModelGapView {
-  /** The provider's name as its config gives it — `OmniRouter` — else its id. */
+  /** The provider's name as its config gives it — `Acme Router` — else its id. */
   provider: string;
-  /** The id the model ids are built from — `corphub`. */
+  /** The id the model ids are built from — `acme`. */
   providerId: string;
   /** How many of that provider's models the session cannot be moved onto. */
   count: number;

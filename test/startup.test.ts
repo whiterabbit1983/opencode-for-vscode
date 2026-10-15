@@ -161,7 +161,7 @@ test("a bare name the PATH cannot see is resolved through a login shell", async 
 test("the config a login shell exports is loaded with the agent", async () => {
   // The same Remote-SSH box as above, failing in a quieter way: `opencode` is
   // on the extension host's `PATH`, so nothing was wrong with finding it, and
-  // the chat came up fine — it just had no OmniRouter in the picker. The
+  // the chat came up fine — it just had no Acme Router in the picker. The
   // provider lives in a config file that `OPENCODE_CONFIG` names, the profile
   // exports that variable, and the extension host started by a non-interactive
   // SSH command never read the profile. So the agent has to be started with
@@ -175,7 +175,7 @@ test("the config a login shell exports is loaded with the agent", async () => {
   const binary = join(bin, "opencode");
   // It says which config file it was started with, on the way out.
   writeFileSync(binary, '#!/bin/sh\necho "config=$OPENCODE_CONFIG" >&2\nexit 1\n', { mode: 0o755 });
-  writeFileSync(join(home, ".bashrc"), 'export OPENCODE_CONFIG="/srv/api/omnirouter.json"\n');
+  writeFileSync(join(home, ".bashrc"), 'export OPENCODE_CONFIG="/srv/api/custom-provider.json"\n');
 
   const restore = withEnv({
     OPENCODE_BIN: "opencode",
@@ -193,7 +193,7 @@ test("the config a login shell exports is loaded with the agent", async () => {
   assert.equal(outcome.ok, false);
   assert.match(
     outcome.message,
-    /config=\/srv\/api\/omnirouter\.json/,
+    /config=\/srv\/api\/custom-provider\.json/,
     "expected the agent to have been started with the config file the profile exports",
   );
 });

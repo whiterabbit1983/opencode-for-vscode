@@ -6,6 +6,16 @@ All notable changes to this extension are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.2.7] - 2026-10-15
+
+### Changed
+
+- No third-party provider is named anywhere in the sources, the tests or the dev
+  fixtures. A config-given provider is written as `acme` / *Acme Router*, which
+  is all the behaviour being illustrated: an opaque id in the model ids, a
+  human name in the heading. The preview scenarios are `custom-provider` and
+  `custom-provider-missing` for the same reason.
+
 ## [0.2.6] - 2026-10-15
 
 ### Added
@@ -116,7 +126,7 @@ All notable changes to this extension are documented here. The format follows
   reads `3 of 148 models`. `↑`/`↓` walk the results, `Enter` picks the
   highlighted one, `Escape` closes, and the filter and the counts stay put while
   the list scrolls. Sections are headed by the name the provider's own config
-  gives it, so a custom provider reads as **OmniRouter** rather than `corphub`.
+  gives it, so a custom provider reads under that name rather than its raw id.
 - The models the OpenCode TUI has recently used, and the ones starred in it,
   now lead the picker. They are read from that TUI's own `model.json`, so the
   extension starts from the models you actually work with and agrees with the

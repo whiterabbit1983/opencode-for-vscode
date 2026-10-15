@@ -97,12 +97,13 @@ grouped and searchable rather than one flat list:
 - **Recent** and **Favourites** come first, read from the OpenCode TUI's own
   `model.json` — the models you have actually used, and the ones you starred.
 - Every other model sits under a heading naming the provider that serves it,
-  taken from that provider's config, so a custom provider reads as *OmniRouter*
-  rather than `corphub`. Each heading says how many models it holds.
+  taken from that provider's config, so a custom provider reads under the name
+  its config gives it rather than its raw id. Each heading says how many models
+  it holds.
 - Type to filter. The label, the model id and the provider are all searched, so
-  `opus`, `claude-opus` and `corphub` each find what you would expect, and the
-  count reads `3 of 148 models`. `↑`/`↓` walk the results and `Enter` picks the
-  highlighted one.
+  `opus`, `claude-opus` and the provider id each find what you would expect,
+  and the count reads `3 of 148 models`. `↑`/`↓` walk the results and `Enter`
+  picks the highlighted one.
 
 Nothing is dropped to make room: a model missing from the picker means the agent
 did not offer it, which is also the only kind that could have been selected.
@@ -257,7 +258,7 @@ npm run preview            # writes screenshots of every scenario to dev/shots/
 ```
 
 Scenarios: `transcript`, `permission`, `question`, `welcome`, `error`,
-`remote-host`, `remote-host-no-models`, `omnirouter`, `omnirouter-missing`. Add
+`remote-host`, `remote-host-no-models`, `custom-provider`, `custom-provider-missing`. Add
 `&expand=N` to open the first `N` tool cards, or `&menu=model|mode|more` to leave
 a menu open.
 
