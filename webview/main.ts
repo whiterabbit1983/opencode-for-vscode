@@ -1036,25 +1036,6 @@ function plural(count: number, noun: string): string {
   return `${count} ${noun}${count === 1 ? "" : "s"}`;
 }
 
-/**
- * A note on the model list when it did not come from the session alone.
- *
- * Both cases add models the session did not offer, read from the same install
- * the agent runs — `host` when it offered none at all, `merged` when its own
- * list was added to. Saying which is better than a picker that looks
- * authoritative and is not.
- */
-function modelSourceNote(): string {
-  const host = state.chat.host?.host ?? "this machine";
-  if (state.chat.modelSource === "host") {
-    return `<div class="menu-note">Read from <code>${escapeHtml(host)}</code> — this agent did not offer a model list.</div>`;
-  }
-  if (state.chat.modelSource === "merged") {
-    return `<div class="menu-note">This agent offered a partial list; the rest was read from <code>${escapeHtml(host)}</code>.</div>`;
-  }
-  return "";
-}
-
 /* ------------------------------------------------------------------ */
 /* The model picker                                                    */
 /* ------------------------------------------------------------------ */
@@ -1087,6 +1068,11 @@ interface ModelChoice {
  * three ways: the models this person actually works with first, then one section
  * per provider under the name that provider's config gives it, then a filter
  * over all of it so nothing is out of reach.
+ *
+ * Every row here is one the agent offered. Nothing is added from the machine's
+ * own catalog: `session/set_config_option` resolves a model against the agent's
+ * catalog and refuses anything missing from it, so an added row would look
+ * selectable and do nothing when picked.
  */
 function modelMenu(): string {
   const option = selectOption("model");
@@ -1110,7 +1096,6 @@ function modelMenu(): string {
 
   return (
     `<div class="menu-label">Model</div>` +
-    modelSourceNote() +
     // `combobox` + `listbox` is the pattern a filterable dropdown is meant to
     // use: focus stays in the field, and `aria-activedescendant` names the row
     // the arrow keys are on, so it is announced without focus ever leaving it.

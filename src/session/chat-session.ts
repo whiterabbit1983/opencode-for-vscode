@@ -34,7 +34,6 @@ import type {
   Question,
   SessionSummary,
 } from "../shared/protocol.js";
-import { hostModelCurrent, modelOptionsFromHost } from "../shared/opencode-cli.js";
 import { modelName } from "../shared/model-name.js";
 import { isPersistable, mergeUsage, noUsageMemory, usageToSeed, type Usage, type UsageMemory } from "../shared/usage.js";
 import { modelToRestore, noModelMemory, type ModelMemory } from "./model-memory.js";
@@ -144,7 +143,14 @@ export class ChatSession implements vscode.Disposable {
 
   snapshot(): ChatState {
     const settings = readSettings();
-    const configOptions = this.effectiveConfigOptions();
+    // What the agent offers is what the picker shows, unchanged. The machine's
+    // own `opencode models` is deliberately *not* merged in: `set_config_option`
+    // resolves a model against the agent's own catalog and answers `model not
+    // found` for anything missing from it, so a host-only row is one that can
+    // never be picked. A list of models that do nothing is worse than a short
+    // one that works. The host catalog still describes the machine in the
+    // settings summary, where it is information rather than a choice.
+    const configOptions = this.configOptions;
     return {
       connection: this.connection,
       connectionMessage: this.connectionMessage,
@@ -157,7 +163,6 @@ export class ChatSession implements vscode.Disposable {
       configOptions: configOptions.length ? configOptions : undefined,
       commands: this.commands,
       model: currentModel(configOptions),
-      modelSource: this.modelSource(configOptions),
       modelRecent: this.tuiModels(configOptions, "recent"),
       modelFavorite: this.tuiModels(configOptions, "favorite"),
       host: this.hostView(),
@@ -189,107 +194,9 @@ export class ChatSession implements vscode.Disposable {
     return this.thread;
   }
 
-  /**
-   * The config options as the UI should see them.
-   *
-   * The session's own models come first, in the order it sent them and under
-   * the labels it gave them. The machine's own catalog is *added* to that list
-   * rather than standing in for it: a session routinely offers a subset of what
-   * its machine can reach — a provider configured in `opencode.json` that the
-   * agent does not enumerate is the ordinary case — so a list that replaced the
-   * session's the moment it was non-empty hid those models entirely. Only when
-   * the session offers nothing at all is the host's list the whole answer.
-   */
-  private effectiveConfigOptions(): ConfigOptionView[] {
-    const models = this.hostInfo?.models;
-    if (!models?.length) {
-      this.hostModelOption = undefined;
-      return this.configOptions;
-    }
-
-    const index = this.modelOptionIndex(this.configOptions);
-    const sessionOption = index >= 0 ? this.configOptions[index] : undefined;
-    const sessionModels = sessionOption?.options ?? [];
-    const seen = new Set(sessionModels.map((option) => option.value));
-    const added = modelOptionsFromHost(models).filter((option) => !seen.has(option.value));
-    const options = [...sessionModels, ...added];
-
-    // `snapshot()` runs on every throttled frame while a turn streams, so the
-    // merged option is rebuilt only when its inputs actually move.
-    const remembered = this.modelMemory.read();
-    if (
-      !this.hostModelOption ||
-      this.hostModelOption.models !== models ||
-      this.hostModelOption.session !== sessionOption?.options ||
-      this.hostModelOption.remembered !== remembered
-    ) {
-      this.hostModelOption = {
-        models,
-        session: sessionOption?.options,
-        remembered,
-        option: {
-          ...(sessionOption ?? { id: "model", name: "Model", type: "select", category: "model" }),
-          options,
-          // The session's own answer to "which model is this" stands. Only when
-          // it gave none is a remembered model marked current, and only when the
-          // host is known to offer it — claiming a selection the agent never
-          // reported would tick the wrong row.
-          current: sessionOption?.current ?? hostModelCurrent(models, remembered),
-        },
-      };
-    }
-    // An empty option is *replaced*, not joined by a second one beside it.
-    // Everything downstream — the menu, the chip, the remembered model — looks
-    // its option up by id and takes the first match, so a leftover empty `model`
-    // would go on shadowing the host's list.
-    const result = [...this.configOptions];
-    if (index >= 0) {
-      result[index] = this.hostModelOption.option;
-    } else {
-      result.push(this.hostModelOption.option);
-    }
-    return result;
-  }
-
-  private hostModelOption?: {
-    models: string[];
-    session?: ConfigOptionView["options"];
-    remembered: string | undefined;
-    option: ConfigOptionView;
-  };
-
   /** Where the model option sits in a list, by id or failing that by category. */
   private modelOptionIndex(options: ConfigOptionView[]): number {
     return options.findIndex((option) => option.id === "model" || option.category === "model");
-  }
-
-  /**
-   * Whether these options contain a model list that is actually usable.
-   *
-   * An option that exists but offers no choices does not count: a session that
-   * reports an empty `model` select has told the picker nothing, and treating
-   * that as "the agent offered a list" would switch off the host fallback and
-   * leave the menu reading *Agent did not offer any models* on a machine whose
-   * OpenCode can list its models perfectly well.
-   */
-  private hasModelOption(options: ConfigOptionView[]): boolean {
-    const index = this.modelOptionIndex(options);
-    return index >= 0 && Boolean(options[index].options?.length);
-  }
-
-  /** Whether the model list on screen is the session's, the host's, or both. */
-  private modelSource(configOptions: ConfigOptionView[]): ChatState["modelSource"] {
-    if (!this.hasModelOption(configOptions)) {
-      return undefined;
-    }
-    if (!this.hasModelOption(this.configOptions)) {
-      return "host";
-    }
-    // Both lists are in play. Say so when the host actually contributed: a
-    // session whose catalog already covered the machine's says nothing.
-    const sessionCount = this.configOptions[this.modelOptionIndex(this.configOptions)].options?.length ?? 0;
-    const shown = configOptions[this.modelOptionIndex(configOptions)].options?.length ?? 0;
-    return shown > sessionCount ? "merged" : "session";
   }
 
   /**
@@ -482,7 +389,7 @@ export class ChatSession implements vscode.Disposable {
    * surprising.
    */
   private async applyRememberedModel(): Promise<void> {
-    const restore = modelToRestore(this.effectiveConfigOptions(), this.modelMemory.read());
+    const restore = modelToRestore(this.configOptions, this.modelMemory.read());
     if (!restore) {
       return;
     }
@@ -830,20 +737,20 @@ export class ChatSession implements vscode.Disposable {
     }
     let failure: string | undefined;
     const response = await this.agent.setConfigOption(this.sessionId, configId, value).catch((error) => {
-      // Reported rather than swallowed when the choice came from the host's own
-      // list: the user picked something they could see, so being told it did
-      // not take is the difference between a stale chip and a broken one.
+      // Kept rather than swallowed: every row in the menu came from the agent,
+      // so a refusal means the pick did not take. The state below only moves on
+      // success, so staying quiet here is what makes a menu row look broken.
       failure = describeError(error);
       log.warn("set config option failed: %s", failure);
       return undefined;
     });
     if (response) {
       this.configOptions = toConfigOptions(response.configOptions);
-    } else if (failure && this.modelSource(this.effectiveConfigOptions()) === "host") {
+    } else if (failure) {
       this.thread.addNotice(
         "warning",
-        "This agent does not offer that setting",
-        `OpenCode did not accept ${configId} = ${value}. The list came from ${machineName()}, but this session cannot change it.`,
+        "OpenCode did not accept that setting",
+        `${configId} = ${value} was refused by ${machineName()}'s OpenCode: ${failure}`,
       );
       this.emitTranscript();
     }

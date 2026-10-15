@@ -20,8 +20,6 @@ import { test } from "node:test";
 import { readHostInfo } from "../src/agent/host-info.js";
 import { ChatSession } from "../src/session/chat-session.js";
 import {
-  hostModelCurrent,
-  modelOptionsFromHost,
   parseAgents,
   parseConfigSources,
   parseModels,
@@ -106,18 +104,6 @@ test("agents are read with the fields worth showing", () => {
 test("the version is read without its leading v", () => {
   assert.equal(parseVersion("opencode v2.0.27"), "2.0.27");
   assert.equal(parseVersion("2.1.0"), "2.1.0");
-});
-
-test("only a model the host offers can be marked as current", () => {
-  // The session never said which model it is on; claiming one it does not have
-  // would put a checkmark on a row the agent cannot use.
-  assert.equal(hostModelCurrent(["opencode/big-pickle"], "anthropic/claude-sonnet-4-5"), undefined);
-  assert.equal(hostModelCurrent(["opencode/big-pickle"], undefined), undefined);
-  assert.equal(hostModelCurrent(["opencode/big-pickle"], "opencode/big-pickle"), "opencode/big-pickle");
-});
-
-test("host model choices keep their id as the label", () => {
-  assert.deepEqual(modelOptionsFromHost(["opencode/big-pickle"]), [{ value: "opencode/big-pickle", label: "opencode/big-pickle" }]);
 });
 
 /* ------------------------------------------------------------------ */
@@ -384,9 +370,84 @@ test("a half-written or unfamiliar model.json remembers nothing", () => {
 });
 
 /* ------------------------------------------------------------------ */
-/* The session falling back to the host's model list                    */
+/* The picker offers exactly what the agent can switch to              */
 /* ------------------------------------------------------------------ */
-test("a session that offers no model list falls back to the host's models", async () => {
+
+/**
+ * Every row in the picker has to be one `session/set_config_option` accepts.
+ *
+ * OpenCode resolves a model against the agent's own catalog and answers `model
+ * not found` for anything missing from it, so a row added from the machine's
+ * `opencode models` cannot be selected however it is clicked. The host catalog
+ * still describes the machine — providers, counts, config sources — but it is
+ * information in the settings, not a choice in the menu.
+ */
+const SELECTABLE = [
+  "a model the agent enumerates can be selected",
+  "a provider the agent does not enumerate is left out of the picker",
+  "a session that offers no models is not filled in from the host",
+  "an empty model select is not filled in from the host",
+] as const;
+
+test(`${SELECTABLE[0]}`, async () => {
+  const dir = mkdtempSync(join(tmpdir(), "opencode-install-"));
+  const binary = standInOpenCode(dir, { configOptions: "model" });
+  const home = remoteShapedHome(binary);
+
+  const chat = new ChatSession(() => dir);
+  try {
+    await withEnv({ OPENCODE_BIN: binary, HOME: home, PATH: "/usr/bin:/bin" }, async () => {
+      await chat.start(undefined);
+      await waitFor(() => Boolean(chat.snapshot().host));
+    });
+
+    const state = chat.snapshot();
+    // The session's list, unchanged — the two models the machine can also reach
+    // are not folded in, because the session cannot be moved onto them.
+    assert.deepEqual(
+      state.configOptions?.find((option) => option.id === "model")?.options?.map((option) => option.value),
+      ["opencode/session-model"],
+    );
+    assert.equal(state.model?.id, "opencode/session-model");
+    // The host still reports what the machine has.
+    assert.equal(state.host?.modelCount, 2);
+  } finally {
+    chat.dispose();
+  }
+});
+
+test(`${SELECTABLE[1]}`, async () => {
+  // The reported bug: on a remote box the session offered a non-empty list, so
+  // the OmniRouter rows used to appear and then do nothing when picked.
+  const dir = mkdtempSync(join(tmpdir(), "opencode-install-"));
+  const binary = standInOpenCode(dir, { configOptions: "partial-model", omnirouter: true });
+  const home = remoteShapedHome(binary);
+
+  const chat = new ChatSession(() => dir);
+  try {
+    await withEnv({ OPENCODE_BIN: binary, HOME: home, PATH: "/usr/bin:/bin" }, async () => {
+      await chat.start(undefined);
+      await waitFor(() => Boolean(chat.snapshot().host));
+    });
+
+    const state = chat.snapshot();
+    assert.deepEqual(
+      state.configOptions?.find((option) => option.id === "model")?.options?.map((option) => option.value),
+      ["opencode/big-pickle"],
+    );
+    assert.equal(state.model?.id, "opencode/big-pickle");
+    // The machine is still described — the provider is named and counted, it is
+    // just not offered as something this session can be moved onto.
+    assert.equal(state.host?.modelCount, 4);
+    assert.deepEqual(state.host?.providers, [
+      { id: "corphub", name: "OmniRouter", models: { "claude-opus-5-5": "Claude Opus 5.5" } },
+    ]);
+  } finally {
+    chat.dispose();
+  }
+});
+
+test(`${SELECTABLE[2]}`, async () => {
   const dir = mkdtempSync(join(tmpdir(), "opencode-install-"));
   const binary = standInOpenCode(dir);
   const home = remoteShapedHome(binary);
@@ -400,15 +461,16 @@ test("a session that offers no model list falls back to the host's models", asyn
       async () => {
         await chat.start(undefined);
         // The settings read happens in the background so it never delays the
-        // first prompt; the model list lands when it does.
+        // first prompt; the summary lands when it does.
         await waitFor(() => Boolean(chat.snapshot().host));
         return chat.snapshot();
       },
     );
 
-    const model = state.configOptions?.find((option) => option.id === "model");
-    assert.deepEqual(model?.options?.map((option) => option.value), ["opencode/big-pickle", "opencode/cat-jam-free"]);
-    assert.equal(state.modelSource, "host");
+    // Nothing is invented for a session that offered nothing. The machine is
+    // still described in the settings; the picker has no rows to show.
+    assert.equal(state.configOptions, undefined);
+    assert.equal(state.model, undefined);
     assert.equal(state.host?.remoteName, "ssh-test-host");
     assert.equal(state.host?.version, "2.0.0-test");
     assert.equal(state.host?.modelCount, 2);
@@ -421,73 +483,7 @@ test("a session that offers no model list falls back to the host's models", asyn
   }
 });
 
-test("a session's own models lead the list and keep the one it is on", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "opencode-install-"));
-  const binary = standInOpenCode(dir, { configOptions: "model" });
-  const home = remoteShapedHome(binary);
-
-  const chat = new ChatSession(() => dir);
-  try {
-    await withEnv({ OPENCODE_BIN: binary, HOME: home, PATH: "/usr/bin:/bin" }, async () => {
-      await chat.start(undefined);
-      await waitFor(() => Boolean(chat.snapshot().host));
-    });
-
-    const state = chat.snapshot();
-    assert.deepEqual(
-      state.configOptions?.find((option) => option.id === "model")?.options?.map((option) => option.value),
-      // The session's model first, then what the machine can reach that the
-      // session did not mention.
-      ["opencode/session-model", "opencode/big-pickle", "opencode/cat-jam-free"],
-    );
-    // The session said which model it is on, so the tick goes there rather than
-    // on a remembered one.
-    assert.equal(state.model?.id, "opencode/session-model");
-    assert.equal(state.modelSource, "merged");
-    // The host still reports what the machine has.
-    assert.equal(state.host?.modelCount, 2);
-  } finally {
-    chat.dispose();
-  }
-});
-
-test("a provider the session does not enumerate is still offered", async () => {
-  // The reported bug: on a remote box the session offered a non-empty list,
-  // which switched the host catalog off, so the OmniRouter section never
-  // appeared even though the machine was configured with it.
-  const dir = mkdtempSync(join(tmpdir(), "opencode-install-"));
-  const binary = standInOpenCode(dir, { configOptions: "partial-model", omnirouter: true });
-  const home = remoteShapedHome(binary);
-
-  const chat = new ChatSession(() => dir);
-  try {
-    await withEnv({ OPENCODE_BIN: binary, HOME: home, PATH: "/usr/bin:/bin" }, async () => {
-      await chat.start(undefined);
-      await waitFor(() => Boolean(chat.snapshot().host));
-    });
-
-    const state = chat.snapshot();
-    const values = state.configOptions?.find((option) => option.id === "model")?.options?.map((option) => option.value);
-    // The session's one model leads; the custom provider it did not enumerate
-    // follows, with nothing repeated.
-    assert.deepEqual(values, [
-      "opencode/big-pickle",
-      "opencode/cat-jam-free",
-      "corphub/claude-opus-5-5",
-      "corphub/cc/claude-opus-5-5",
-    ]);
-    assert.equal(state.modelSource, "merged");
-    assert.equal(state.model?.id, "opencode/big-pickle");
-    // The provider heading the picker groups under is the name its config gives.
-    assert.deepEqual(state.host?.providers, [
-      { id: "corphub", name: "OmniRouter", models: { "claude-opus-5-5": "Claude Opus 5.5" } },
-    ]);
-  } finally {
-    chat.dispose();
-  }
-});
-
-test("a session whose model option is empty still falls back to the host's models", async () => {
+test(`${SELECTABLE[3]}`, async () => {
   const dir = mkdtempSync(join(tmpdir(), "opencode-install-"));
   const binary = standInOpenCode(dir, { configOptions: "empty-model" });
   const home = remoteShapedHome(binary);
@@ -499,15 +495,14 @@ test("a session whose model option is empty still falls back to the host's model
       await waitFor(() => Boolean(chat.snapshot().host));
     });
 
-    // An empty select is not a model list. Counting it as one would switch the
-    // host fallback off and leave the picker reading *Agent did not offer any
-    // models* on a machine that can list every model it can reach.
+    // An empty select stays empty. Substituting the machine's models would put
+    // rows in front of the user that the agent refuses to switch to.
     const state = chat.snapshot();
     assert.deepEqual(
       state.configOptions?.find((option) => option.id === "model")?.options?.map((option) => option.value),
-      ["opencode/big-pickle", "opencode/cat-jam-free"],
+      [],
     );
-    assert.equal(state.modelSource, "host");
+    assert.equal(state.host?.modelCount, 2);
   } finally {
     chat.dispose();
   }

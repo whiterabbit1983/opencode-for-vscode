@@ -78,10 +78,12 @@ config sources it loaded, global and project-level alike.
 
 Those settings are read straight from that machine's own OpenCode, using the
 same binary and environment the agent was started with, so what is shown cannot
-come from a different install than the one answering your prompts. If the
-session offers a model list of its own, that list wins; if it does not, the
-machine's models fill the picker instead and the menu says where they were read
-from.
+come from a different install than the one answering your prompts. The **model
+picker** is the exception, and deliberately so: it lists exactly the models the
+agent offers, because a model the agent does not know about cannot be switched
+to no matter what the machine has configured. The machine's own catalog still
+appears in the **more** menu — its providers, their names, how many models there
+are — as a description of the install rather than a list of choices.
 
 If the list is empty, the header tooltip names the host and the binary: that is
 the fastest way to tell a remote box that has not signed in to a provider from
@@ -102,15 +104,27 @@ grouped and searchable rather than one flat list:
   count reads `3 of 148 models`. `↑`/`↓` walk the results and `Enter` picks the
   highlighted one.
 
-Nothing is dropped to make room: a model missing from the picker means that
-machine's OpenCode does not offer it, which is what the **more** menu's model
-count reflects.
+Nothing is dropped to make room: a model missing from the picker means the agent
+did not offer it, which is also the only kind that could have been selected.
 
-The list is the session's own models first — in the order the agent reports them
-— with the machine's own `opencode models` added behind them. That matters for a
-custom provider: an agent does not always enumerate a provider configured in
-`opencode.json`, and the host catalog is what knows about it. When the host
-contributed to the list, the picker says so.
+### If a provider is missing from the picker
+
+A custom provider — OmniRouter, say, configured in `opencode.json` or named by
+`OPENCODE_CONFIG` — is only in the picker once the agent itself enumerates it.
+`session/set_config_option` resolves a model against the agent's own catalog and
+answers `model not found` for anything absent from it, and there is no other
+ACP route to select one. So the extension never adds rows of its own: a row it
+cannot deliver is worse than a missing one, because a missing one sends you
+looking at the real cause.
+
+Two things produce that state, and both are worth checking:
+
+- The agent started before the config was in its environment. See
+  [below](#config-files-opencode-only-finds-through-the-environment).
+- The provider is configured for a different machine or a different directory
+  than the session's. The **more** menu names the host, the config directory and
+  every config source that install loaded, which is the fastest way to see which
+  `opencode.json` the agent actually read.
 
 ### Config files OpenCode only finds through the environment
 
@@ -234,8 +248,8 @@ npm run preview            # writes screenshots of every scenario to dev/shots/
 ```
 
 Scenarios: `transcript`, `permission`, `question`, `welcome`, `error`,
-`remote-host`, `remote-host-model-fallback`. Add `&expand=N` to open the first
-`N` tool cards, or `&menu=model|mode|more` to leave a menu open.
+`remote-host`, `remote-host-no-models`, `omnirouter`. Add `&expand=N` to open the
+first `N` tool cards, or `&menu=model|mode|more` to leave a menu open.
 
 ## License
 

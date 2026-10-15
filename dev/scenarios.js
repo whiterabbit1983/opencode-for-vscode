@@ -110,9 +110,11 @@ scenarios = {
     items: [],
   },
 
-  // The same window on an agent whose session reported no model list: the picker
-  // is filled from the host's own OpenCode, and says where the list came from.
-  "remote-host-model-fallback": {
+  // The same window on an agent whose session reported no model list at all.
+  // The machine clearly has models — the settings summary counts three — but
+  // none of them can be offered, because every row has to be one the agent will
+  // accept. The picker says so rather than filling itself in.
+  "remote-host-no-models": {
     ...base,
     cwd: "/srv/acme-api",
     host: {
@@ -123,25 +125,16 @@ scenarios = {
       configDir: "/home/dev/.config/opencode",
       modelCount: 3,
     },
-    configOptions: [
-      {
-        id: "model",
-        name: "Model",
-        type: "select",
-        category: "model",
-        options: [
-          { value: "opencode/big-pickle", label: "opencode/big-pickle" },
-          { value: "opencode/cat-jam-free", label: "opencode/cat-jam-free" },
-          { value: "opencode/space-bunny-free", label: "opencode/space-bunny-free" },
-        ],
-      },
-    ],
-    modelSource: "host",
+    // No `model` option at all, which is what an agent that offers no list
+    // reports. Explicitly `undefined` rather than left to `base`, whose own
+    // model list would otherwise stand in for it.
+    configOptions: [],
     items: [],
   },
 
   // A remote host whose catalog is mostly a custom provider: every model id is
   // `corphub/…`, several of them nested one level deeper (`corphub/cc/…`).
+  // These are the models the agent enumerates, so every row here is selectable.
   omnirouter: {
     ...base,
     cwd: "/srv/acme-api",
@@ -171,10 +164,6 @@ scenarios = {
     },
     modelRecent: ["corphub/claude-opus-5-5", "corphub/cc/claude-opus-5-5"],
     modelFavorite: ["corphub/claude-sonnet-5-5"],
-    // The agent offered a partial list; the rest was read from the host. This
-    // is the state a remote box actually lands in, where a custom provider in
-    // `opencode.json` is missing from what the agent enumerates.
-    modelSource: "merged",
     configOptions: [
       {
         id: "model",

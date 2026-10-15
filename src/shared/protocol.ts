@@ -152,27 +152,13 @@ export interface ChatState {
   commands?: Array<{ name: string; description: string }>;
   model?: { id: string; name: string };
   /**
-   * Where the model list came from.
-   *
-   * `host` means the session reported no model option of its own and the list
-   * was read from that machine's OpenCode instead. It is still that machine's
-   * list, but the session did not vouch for it, so the UI says so rather than
-   * presenting it as if the session had offered it.
-   *
-   * `merged` means the session offered a list and the machine's own catalog
-   * was added to it — the session's models first, then whatever it did not
-   * mention. A session's list is routinely a subset of what its machine can
-   * reach (a provider configured in `opencode.json` that the agent does not
-   * enumerate), so dropping the host catalog here would hide models that work.
-   */
-  modelSource?: "session" | "host" | "merged";
-  /**
    * Models the OpenCode TUI has recently used and starred, most recent first.
    *
    * Read from that TUI's own `model.json`, so the picker can lead with the
    * models this person actually works with instead of making them hunt through
-   * every provider on the machine. Both lists are intersected with what is on
-   * offer — a TUI can remember a model that has since been removed.
+   * every provider on the machine. Both lists are intersected with what the
+   * session offers — a TUI can remember a model that has since been removed,
+   * or one this session cannot be moved onto.
    */
   modelRecent?: string[];
   modelFavorite?: string[];

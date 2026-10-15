@@ -26,7 +26,8 @@ const scenarios = process.argv.slice(2).length
       "starting&then=welcome",
       "error",
       "remote-host&menu=more",
-      "remote-host-model-fallback&menu=model",
+      "remote-host-no-models&menu=model",
+      "omnirouter&menu=model",
     ];
 
 const browsers = ["firefox", "google-chrome", "chromium", "chromium-browser"];

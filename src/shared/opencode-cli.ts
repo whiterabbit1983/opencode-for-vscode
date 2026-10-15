@@ -332,24 +332,3 @@ function modelRefs(value: unknown): string[] {
   }
   return ids;
 }
-
-/**
- * The model choice shown when the session itself offers none.
- *
- * An agent that reports no `model` config option — an older build, or one whose
- * options failed to come back — would otherwise leave the picker empty even
- * though the host can list its models perfectly well. Reading them from the
- * same binary the agent was started from keeps the list coming from the machine
- * the user is connected to.
- *
- * `current` is left unset unless the remembered model is among them: claiming a
- * selection the agent never reported would put a checkmark on the wrong row.
- */
-export function modelOptionsFromHost(models: string[]): Array<{ value: string; label: string }> {
-  return models.map((value) => ({ value, label: value }));
-}
-
-/** Whether the remembered model is one the host actually offers. */
-export function hostModelCurrent(models: string[], remembered: string | undefined): string | undefined {
-  return remembered && models.includes(remembered) ? remembered : undefined;
-}

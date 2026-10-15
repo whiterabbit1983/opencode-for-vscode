@@ -6,6 +6,32 @@ All notable changes to this extension are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.2.5] - 2026-10-15
+
+### Fixed
+
+- A model the picker showed but could not switch to is gone. The list used to be
+  the session's own models with the machine's `opencode models` added behind them,
+  which meant a custom provider the agent does not enumerate — OmniRouter over
+  Remote-SSH, typically — appeared in the menu and did nothing when clicked. The
+  reason is in OpenCode, not in the click: `session/set_config_option` resolves a
+  model against the agent's own catalog and answers `model not found` for
+  anything missing from it, and no other ACP route can select one, `session/new`
+  included. Nothing is added to the picker now, so every row is one that works.
+  The machine's catalog still describes the install in the **more** menu — its
+  providers, their names, how many models there are — where it is information
+  rather than a choice.
+- A pick OpenCode refuses now says so. The failure was only reported when the
+  whole model list had come from the host, so on a merged list a refused pick
+  passed silently and the row simply appeared not to work. Every refusal now
+  posts the reason.
+
+### Removed
+
+- The *this agent offered a partial list; the rest was read from `<host>`* note
+  above the model list, and with it the `modelSource` state behind it. It
+  described a list that no longer exists.
+
 ## [0.2.4] - 2026-10-14
 
 ### Fixed
